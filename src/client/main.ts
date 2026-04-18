@@ -9,11 +9,18 @@ import * as camera2d from 'glov/client/camera2d';
 import { platformParameterGet } from 'glov/client/client_config';
 import * as engine from 'glov/client/engine';
 import { ALIGN, Font, fontStyle, fontStyleColored } from 'glov/client/font';
-import { drag, KEYS, mousePos, mouseUpEdge } from 'glov/client/input';
+import {
+  drag,
+  KEYS,
+  mousePos,
+  mouseUpEdge,
+} from 'glov/client/input';
 import { netInit } from 'glov/client/net';
 import { spriteSetGet } from 'glov/client/sprite_sets';
+import { BLEND_ADDITIVE } from 'glov/client/sprites';
 import {
   button,
+  drawCircle,
   playUISound,
   scaleSizes,
   setButtonHeight,
@@ -22,9 +29,29 @@ import {
   uiGetFont,
 } from 'glov/client/ui';
 import { randCreate } from 'glov/common/rand_alea';
-import { clamp, easeIn, easeInOut, lerp, ridx } from 'glov/common/util';
-import { JSVec2, JSVec4, v4copy, v4lerp, Vec4, vec4 } from 'glov/common/vmath';
-import { PAL_BLACK, PAL_BORDER, PAL_WHITE, palette, palette_font } from './palette';
+import {
+  clamp,
+  easeIn,
+  easeInOut,
+  lerp,
+  ridx,
+} from 'glov/common/util';
+import {
+  JSVec2,
+  JSVec4,
+  v4copy,
+  v4lerp,
+  Vec4,
+  vec4,
+} from 'glov/common/vmath';
+import {
+  PAL_BLACK,
+  PAL_BORDER,
+  PAL_GREEN,
+  PAL_WHITE,
+  palette,
+  palette_font,
+} from './palette';
 
 const { abs, floor, max, min } = Math;
 
@@ -57,7 +84,7 @@ const style_floater = fontStyle(null, {
   outline_color: palette_font[PAL_BLACK],
 });
 
-const SIGNAL_DIST = 5;
+const SIGNAL_DIST = 4;
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const RESOURCES = [
@@ -159,6 +186,7 @@ type Drone = {
   contents: null | ResourceType;
   tick_id: number;
   thinking: boolean;
+  stopped: boolean;
   uid: number;
   gain_resource_tick?: number;
 };
@@ -223,14 +251,17 @@ function resourceValue(res: ResourceType): number {
   assert(v);
   return v;
 }
+function resourceMatches(res1: ResourceType, res2: ResourceType | null): boolean {
+  return !res2 || res1 === res2;
+}
 function craftResult(inputs: ResourceType[]): ResourceType {
   if (inputs.length === 1) {
     return inputs[0];
   }
   for (let ii = 0; ii < recipes.length; ++ii) {
     let entry = recipes[ii];
-    if (entry[2] === inputs[0] && entry[3] === inputs[1] ||
-      entry[2] === inputs[1] && entry[3] === inputs[0]
+    if (resourceMatches(inputs[0], entry[2]) && resourceMatches(inputs[1], entry[3]) ||
+      resourceMatches(inputs[1], entry[2]) && resourceMatches(inputs[0], entry[3])
     ) {
       return entry[0];
     }
@@ -348,6 +379,7 @@ class SimState {
             last_contents: null,
             tick_id: 0,
             thinking: false,
+            stopped: false,
             uid: ++this.last_uid,
           };
           drones.push(drone);
@@ -622,6 +654,10 @@ class SimState {
     drone.last_x = drone.x;
     drone.last_y = drone.y;
     drone.last_contents = drone.contents;
+    if (drone.stopped) {
+      return;
+    }
+
     let x = drone.x + DX[drone.rot];
     let y = drone.y + DY[drone.rot];
     if (x < 0 || y < 0 || x >= this.parent.w || y >= this.parent.h) {
@@ -637,10 +673,10 @@ class SimState {
     }
   }
 
-  tryMove(drone: Drone): boolean {
+  tryMove(drone: Drone, signals: { x: number; y: number }[]): boolean {
     let x = drone.x + DX[drone.rot];
     let y = drone.y + DY[drone.rot];
-    if (x < 0 || y < 0 || x >= this.parent.w || y >= this.parent.h) {
+    if (x < 0 || y < 0 || x >= this.parent.w || y >= this.parent.h || drone.stopped) {
       return false;
     }
     if (this.busy[y][x] > 1) {
@@ -652,7 +688,7 @@ class SimState {
     }
     let other_drone = this.drone_map[y][x];
     if (other_drone && other_drone.tick_id !== this.tick_id) {
-      this.tickDroneActual(other_drone);
+      this.tickDroneActual(other_drone, signals);
       other_drone = this.drone_map[y][x];
     }
     if (other_drone && !other_drone.thinking) {
@@ -663,19 +699,28 @@ class SimState {
     drone.x = x;
     drone.y = y;
     this.drone_map[drone.y][drone.x] = drone;
+
+    if (target_tile && target_tile.type === 'signal-stop') {
+      drone.stopped = true;
+    }
+
     return true;
   }
 
-  tickDroneActual(drone: Drone): void {
+  tickDroneActual(drone: Drone, signals: { x: number; y: number }[]): void {
     if (drone.tick_id === this.tick_id) {
       return;
     }
     drone.tick_id = this.tick_id;
     drone.thinking = true;
-    this.tryMove(drone);
+    this.tryMove(drone, signals);
     let tile = this.parent.map[drone.y][drone.x];
-    if (tile && tile.type === 'rotate') {
-      drone.rot = (drone.rot + (tile.rot ? 3 : 1)) % 4;
+    if (tile) {
+      if (tile.type === 'rotate') {
+        drone.rot = (drone.rot + (tile.rot ? 3 : 1)) % 4;
+      } else if (tile.type === 'signal-go') {
+        signals.push(drone);
+      }
     }
     drone.thinking = false;
   }
@@ -684,9 +729,11 @@ class SimState {
   isDay0(): boolean {
     return !this.tick_id;
   }
+  activated_signals: JSVec4[] = [];
   tick(): void {
     ++this.tick_id;
     this.transfers.length = 0;
+    this.activated_signals.length = 0;
     for (let jj = 0; jj < this.parent.h; ++jj) {
       for (let ii = 0; ii < this.parent.w; ++ii) {
         this.busy[jj][ii] = 0;
@@ -696,8 +743,28 @@ class SimState {
       this.tickDroneEarly(this.drones[ii]);
     }
     if (this.power > 0) {
+      let signals: { x: number; y: number }[] = [];
       for (let ii = 0; ii < this.drones.length; ++ii) {
-        this.tickDroneActual(this.drones[ii]);
+        this.tickDroneActual(this.drones[ii], signals);
+      }
+      for (let ii = 0; ii < this.drones.length; ++ii) {
+        let drone = this.drones[ii];
+        if (drone.stopped) {
+          for (let jj = 0; jj < signals.length; ++jj) {
+            let signal = signals[jj];
+            if (drone.x >= signal.x - SIGNAL_DIST &&
+              drone.x <= signal.x + SIGNAL_DIST &&
+              drone.y >= signal.y - SIGNAL_DIST &&
+              drone.y <= signal.y + SIGNAL_DIST
+            ) {
+              this.activated_signals.push([
+                signal.x, signal.y,
+                drone.x, drone.y
+              ]);
+              drone.stopped = false;
+            }
+          }
+        }
       }
     }
     for (let ii = 0; ii < this.tickables.length; ++ii) {
@@ -1108,6 +1175,21 @@ function buildMode(): void {
     can_place = false;
   }
 
+  if (hover_cell && hover_cell.type === 'signal-go') {
+    for (let jj = -SIGNAL_DIST; jj <= SIGNAL_DIST; ++jj) {
+      for (let ii = -SIGNAL_DIST; ii <= SIGNAL_DIST; ++ii) {
+        autoAtlas('main', 'signal-preview').draw({
+          x: (x + ii) * TILE_SIZE,
+          y: (y + jj) * TILE_SIZE,
+          z: Z.MAP - 0.01,
+          w: TILE_SIZE,
+          h: TILE_SIZE,
+          color: (map[y + jj] || [])[x + ii]?.type === 'signal-stop' ? undefined : [1, 1, 1, 0.25],
+        });
+      }
+    }
+  }
+
   if (tool) {
     let color: JSVec4 | Vec4 = (can_place || can_rotate) ? [1, 1, 1, 0.5] : [1, 0, 0, 0.5];
     let eff_rot = selected_rot;
@@ -1412,6 +1494,23 @@ function statePlay(dt: number): void {
       w: TILE_SIZE,
       h: TILE_SIZE,
     });
+  }
+
+  // draw activated signals
+  // [0, 0.5, 0.75, 1] -> [0, 0, 1, 1]
+  let blend_signal = easeIn(
+    clamp(progress * 4 - 2, 0, 1),
+    1.5
+  );
+  if (blend_signal && blend_signal < 1) {
+    let { activated_signals } = sim_state;
+    for (let ii = 0; ii < activated_signals.length; ++ii) {
+      let sig = activated_signals[ii];
+      drawCircle(
+        (lerp(blend_signal, sig[0], sig[2]) + 0.5) * TILE_SIZE,
+        (lerp(blend_signal, sig[1], sig[3]) + 0.5) * TILE_SIZE,
+        Z.MAP + 1, TILE_SIZE/4, 0, palette[PAL_GREEN], BLEND_ADDITIVE);
+    }
   }
 
   drawFloaters(dt);
