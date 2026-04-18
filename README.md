@@ -14,9 +14,10 @@ Start with: `npm start` (after running `npm i` once)
 
 TODO
 ====
-* fade day in/out and show money gained
-  * button and hotkey to reset the day immediately (try doing this upon every placement near an actor?)
-* fade out / to black trashed items
+
+Maybe
+=====
+* button and hotkey to reset the day immediately (try doing this upon every placement near an actor?)
 * undo/redo
 
 Plan - Drone Supervisor II Online!

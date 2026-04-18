@@ -22,6 +22,7 @@ import { BLEND_ADDITIVE } from 'glov/client/sprites';
 import {
   button,
   drawCircle,
+  drawRect2,
   playUISound,
   scaleSizes,
   setButtonHeight,
@@ -42,6 +43,7 @@ import {
   JSVec4,
   v4copy,
   v4lerp,
+  v4set,
   Vec4,
   vec4,
 } from 'glov/common/vmath';
@@ -353,7 +355,7 @@ class SimState {
   last_uid = 0;
   money_earned = 0;
   transfers: [
-    'spawn'|'pickup'|'from'|'within', // to drone
+    'spawn'|'pickup'|'from'|'within'|'trash', // to drone
     ResourceType, number, number, number, number
   ][] = [];
   float: FloatCB | null;
@@ -569,7 +571,7 @@ class SimState {
         let trash_idx = 3;
         let trash_pos = (trash_idx - rot + 4) % 4;
         this.transfers.push([
-          'within', ticker.multi_contents[0],
+          'trash', ticker.multi_contents[0],
           ticker.x + craft_contents_coords[out_pos][0], ticker.y + craft_contents_coords[out_pos][1],
           ticker.x + craft_contents_coords[trash_pos][0], ticker.y + craft_contents_coords[trash_pos][1]
         ]);
@@ -910,7 +912,7 @@ class GameState {
       };
       this.map[7][5] = {
         type: 'spawner',
-        rot: 1,
+        rot: 3,
       };
       this.map[5][1] = {
         type: 'craft',
@@ -951,17 +953,17 @@ class GameState {
   }
 
   resetDay(): void {
-    if (this.sim_state) {
-      let dm = this.calcValue();
-      if (dm) {
-        this.money += dm;
-        uiFloat('day_end',
-          camera2d.x0() + camera2d.w() * 0.5,
-          camera2d.y0() + FONT_HEIGHT * 2,
-          `Day end: +$${dm}`);
-      }
-    }
     this.sim_state = new SimState(this, this.float.bind(this));
+  }
+  awardMoney(): void {
+    let dm = this.calcValue();
+    if (dm) {
+      this.money += dm;
+      uiFloat('day_end',
+        camera2d.x0() + camera2d.w() * 0.5,
+        camera2d.y0() + FONT_HEIGHT * 2,
+        `Day end: +$${dm}`);
+    }
   }
 
   best_value = 0;
@@ -977,6 +979,30 @@ class GameState {
     return v;
   }
 
+  calcNetWorth(): number {
+    let counts: Partial<Record<CellType, number>> = {};
+    let { map, w, h } = this;
+    for (let jj = 0; jj < h; ++jj) {
+      let row = map[jj];
+      for (let ii = 0; ii < w; ++ii) {
+        let cell = row[ii];
+        if (cell && !cell.nodraw) {
+          counts[cell.type] = (counts[cell.type] || 0) + 1;
+        }
+      }
+    }
+    let r = 0;
+    for (let key in COST_TABLE) {
+      let cost_calc = COST_TABLE[key as CellType];
+      if (cost_calc) {
+        for (let jj = 0; jj < (counts[key as CellType] || 0); ++jj) {
+          r += cost_calc[0] + cost_calc[1] * jj;
+        }
+      }
+    }
+    return r + this.money;
+  }
+
   countOf(tile_type: CellType): number {
     let r = 0;
     let { w, h, map } = this;
@@ -984,7 +1010,7 @@ class GameState {
       let row = map[jj];
       for (let ii = 0; ii < w; ++ii) {
         let cell = row[ii];
-        if (cell && cell.type === tile_type) {
+        if (cell && cell.type === tile_type && !cell.nodraw) {
           ++r;
         }
       }
@@ -1139,10 +1165,10 @@ function drawHUD(): void {
   font.draw({
     style: style_floater,
     x: 0, w: game_width,
-    y,
+    y: y + 2,
     align: ALIGN.HCENTER | ALIGN.HWRAP,
-    text: `value: $${game_state.calcValue()}/day  money: $${game_state.money}  ` +
-      `step: ${min(max_power, max_power - game_state.sim_state.power)} / ${max_power}`,
+    text: `Revenue: $${game_state.calcValue()}/day  ` +
+      `Step: ${min(max_power, max_power - game_state.sim_state.power)} / ${max_power}`,
   });
 
   const TOOL_PAD = 4;
@@ -1180,9 +1206,16 @@ function drawHUD(): void {
     }
     y += BUTTON_HEIGHT + TOOL_PAD;
   }
+
+  font.draw({
+    style: style_floater,
+    x, y, z, w,
+    align: ALIGN.HWRAP | ALIGN.HCENTER,
+    text: `Money:\n$${game_state.money}\n\nNet worth:\n$${game_state.calcNetWorth()}`,
+  });
 }
 
-function drawFloaters(floaters: Floater[], dt: number, z: number): void {
+function drawFloaters(floaters: Floater[], dt: number, z: number, size?: number): void {
   for (let ii = floaters.length - 1; ii >= 0; --ii) {
     let floater = floaters[ii];
     floater.t += dt;
@@ -1192,6 +1225,7 @@ function drawFloaters(floaters: Floater[], dt: number, z: number): void {
     }
     font.draw({
       style: FLOAT_STYLE[floater.style] || style_floater,
+      size,
       alpha: min(1, (floater.t1 - floater.t) / 250),
       x: floater.x,
       y: floater.y - floater.t / floater.t1 * TILE_SIZE,
@@ -1367,6 +1401,9 @@ function statePlay(dt: number): void {
     counter -= TICK_TIME;
     counter = min(counter, TICK_TIME - 1);
     game_state.sim_state.tick();
+    if (game_state.sim_state.power === -1) {
+      game_state.awardMoney();
+    }
     if (game_state.sim_state.power < -1) {
       game_state.resetDay();
     }
@@ -1375,12 +1412,27 @@ function statePlay(dt: number): void {
 
   drawHUD();
 
-  let drag_ret = drag({
+  let fade = game_state.sim_state.tick_id === 0 ?
+    1 - counter / TICK_TIME * 2 :
+    game_state.sim_state.power < 0 ?
+      counter / TICK_TIME * 2 - 1 :
+      0;
+  fade = clamp(fade, 0, 1);
+  let full_rect = {
     x: camera2d.x0Real(),
     y: camera2d.y0Real(),
     w: camera2d.wReal(),
     h: camera2d.hReal(),
-  });
+  };
+  if (fade < 1) {
+    drawRect2({
+      ...full_rect,
+      z: Z.UI - 10,
+      color: [palette[PAL_BLACK][0], palette[PAL_BLACK][1], palette[PAL_BLACK][2], fade],
+    });
+  }
+
+  let drag_ret = drag(full_rect);
   if (drag_ret) {
     view_center[0] -= drag_ret.delta[0] / TILE_SIZE;
     view_center[1] -= drag_ret.delta[1] / TILE_SIZE;
@@ -1523,36 +1575,36 @@ function statePlay(dt: number): void {
   }
 
   // draw drones
-  let progress = t;
+  let progress_drone = t;
   if (sim_state.power < 0) {
-    progress = 0;
+    progress_drone = 0;
   }
   // [0,0.5,1] -> [0,1,1]
-  let blend = easeInOut(
-    clamp(2 * progress, 0, 1),
+  let blend_drone = easeInOut(
+    clamp(2 * progress_drone, 0, 1),
     2
   );
   // [0,bump_time,bump_time*2,1] = [0,0.3,0,0];
   let bump_time = 0.2;
-  let bump_blend = 0.3 * easeIn(max(0, 1 - 1/bump_time * abs(bump_time - progress)), 2);
+  let bump_blend = 0.3 * easeIn(max(0, 1 - 1/bump_time * abs(bump_time - progress_drone)), 2);
 
   for (let ii = 0; ii < drones.length; ++ii) {
     let drone = drones[ii];
     let { x, y, rot, contents, last_x, last_y, last_rot, last_contents, gain_resource_tick } = drone;
 
     if (x !== last_x || y !== last_y) {
-      x = lerp(blend, last_x, x);
-      y = lerp(blend, last_y, y);
+      x = lerp(blend_drone, last_x, x);
+      y = lerp(blend_drone, last_y, y);
     } else if (!sim_state.isDay0()) {
       let target_x = x + DX[rot];
       let target_y = y + DY[rot];
       x = lerp(bump_blend, x, target_x);
       y = lerp(bump_blend, y, target_y);
     }
-    if (progress < 0.75) {
+    if (progress_drone < 0.75) {
       rot = last_rot;
     }
-    if (blend < 1) {
+    if (blend_drone < 1) {
       contents = last_contents;
     }
 
@@ -1584,22 +1636,31 @@ function statePlay(dt: number): void {
   }
 
   // draw resource transfers
+  // [0,0.5,1] -> [0,1,1]
+  let blend_within = easeInOut(
+    clamp(2 * t, 0, 1),
+    2
+  );
   // [0,0.5,1] -> [0,0,1]
   let blend_inout = easeInOut(
-    clamp(2 * progress - 1, 0, 1),
+    clamp(2 * t - 1, 0, 1),
     2
   );
   for (let ii = 0; ii < transfers.length; ++ii) {
     let trans = transfers[ii];
     let [mode, res, x, y, to_x, to_y] = trans;
-    if (mode === 'within') {
-      if (blend === 1) {
+    let color: JSVec4 = [1,1,1,1];
+    if (mode === 'within' || mode === 'trash') {
+      if (blend_within === 1) {
         continue;
       }
-      x = lerp(blend, x, to_x);
-      y = lerp(blend, y, to_y);
+      x = lerp(blend_within, x, to_x);
+      y = lerp(blend_within, y, to_y);
+      if (mode === 'trash') {
+        v4set(color, 1 - blend_within, 1 - blend_within, 1 - blend_within, 1 - blend_within);
+      }
     } else { // to/from
-      if (blend < 1 && (mode !== 'pickup' || isTransferTo(x, y))) {
+      if (blend_within < 1 && (mode !== 'pickup' || isTransferTo(x, y))) {
         continue;
       }
       x = lerp(blend_inout, x, to_x);
@@ -1611,13 +1672,14 @@ function statePlay(dt: number): void {
       z: z + 0.1,
       w: TILE_SIZE,
       h: TILE_SIZE,
+      color,
     });
   }
 
   // draw activated signals
   // [0, 0.5, 0.75, 1] -> [0, 0, 1, 1]
   let blend_signal = easeIn(
-    clamp(progress * 4 - 2, 0, 1),
+    clamp(progress_drone * 4 - 2, 0, 1),
     1.5
   );
   if (blend_signal && blend_signal < 1) {
@@ -1636,7 +1698,7 @@ function statePlay(dt: number): void {
   buildMode();
 
   camera2d.pop();
-  drawFloaters(ui_floaters, dt_orig, Z.UIFLOATERS);
+  drawFloaters(ui_floaters, dt_orig, Z.UIFLOATERS, FONT_HEIGHT * 2);
 }
 
 function playInit(): void {
