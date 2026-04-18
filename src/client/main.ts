@@ -8,29 +8,35 @@ import { autoAtlas } from 'glov/client/autoatlas';
 import * as camera2d from 'glov/client/camera2d';
 import { platformParameterGet } from 'glov/client/client_config';
 import * as engine from 'glov/client/engine';
+import { ALIGN, Font, fontStyle } from 'glov/client/font';
 import { drag } from 'glov/client/input';
 import { netInit } from 'glov/client/net';
 import { spriteSetGet } from 'glov/client/sprite_sets';
 import {
   scaleSizes,
   setFontHeight,
+  uiGetFont,
 } from 'glov/client/ui';
 import { randCreate } from 'glov/common/rand_alea';
+import { clamp, easeIn, easeInOut, lerp, ridx } from 'glov/common/util';
 import { JSVec2, v4copy, Vec4, vec4 } from 'glov/common/vmath';
-import { PAL_BORDER, palette } from './palette';
+import { PAL_BLACK, PAL_BORDER, PAL_WHITE, palette, palette_font } from './palette';
 
-const { floor } = Math;
+const { abs, floor, max, min } = Math;
 
 window.Z = window.Z || {};
 Z.BACKGROUND = 1;
 Z.SPRITES = 10;
 Z.MAP = 10;
+Z.FLOATERS = 20;
 
 // Virtual viewport for our game logic
 const game_width = 384;
 const game_height = 256;
 
 const TILE_SIZE = 15;
+
+let font: Font;
 
 function init(): void {
   // anything?
@@ -39,14 +45,34 @@ function init(): void {
 
 const clear_color = palette[PAL_BORDER];
 
-const RESOURCES = ['wood', 'stone', 'fruit'] as const;
+const style_floater = fontStyle(null, {
+  color: palette_font[PAL_WHITE],
+  outline_width: 2.5,
+  outline_color: palette_font[PAL_BLACK],
+});
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const RESOURCES = [
+  'wood',
+  'stone',
+  'fruit',
+  'beer',
+  'jam',
+  'fire',
+] as const;
 type ResourceType = typeof RESOURCES[number];
+const BASE_RESOURCES = [
+  'wood',
+  'stone',
+  'fruit'
+] as const;
+type BaseResourceType = typeof BASE_RESOURCES[number];
 type LevelDef = {
   w: number;
   h: number;
   starting_power: number;
   starting_money: number;
-  resources: Record<ResourceType, number>;
+  resources: Record<BaseResourceType, number>;
   seed: number;
 };
 
@@ -62,6 +88,11 @@ const level_defs: LevelDef[] = [{
     fruit: 3,
   },
 }];
+
+type FloatStyle = 'base_sale';
+const FLOAT_TIME: Record<FloatStyle, number> = {
+  base_sale: 3000,
+};
 
 const ROT_TO_DIR = [
   'up',
@@ -87,9 +118,13 @@ type MapEntry = {
 };
 
 type Drone = {
+  last_x: number;
+  last_y: number;
   x: number;
   y: number;
+  last_rot: number;
   rot: number;
+  last_contents: null | ResourceType;
   contents: null | ResourceType;
   tick_id: number;
   thinking: boolean;
@@ -123,8 +158,47 @@ function cmpTickable(a: SimMapEntry, b: SimMapEntry): number {
   return a.x - b.x;
 }
 
+const VALF = 65;
+const VALW = 80;
+const VALS = 100;
+const VAL2 = 100;
+
+const recipes: [ResourceType, number, ResourceType, ResourceType | null][] = [
+  ['beer', VALF + VALW + VAL2, 'fruit', 'wood'],
+  ['jam', VALF + VALS + VAL2, 'fruit', 'stone'],
+  ['fire', VALS + VALW + VAL2, 'stone', 'wood'],
+
+
+  ['fruit', VALF, 'fruit', null],
+  ['wood', VALW, 'wood', null],
+  ['stone', VALS, 'stone', null],
+];
+const RESOURCE_VALUE = {} as Record<ResourceType, number>;
+recipes.forEach(function (entry) {
+  RESOURCE_VALUE[entry[0]] = entry[1];
+});
+
 function resourceValue(res: ResourceType): number {
-  return 100;
+  let v = RESOURCE_VALUE[res];
+  assert(v);
+  return v;
+}
+function craftResult(inputs: ResourceType[]): ResourceType {
+  if (inputs.length === 1) {
+    return inputs[0];
+  }
+  for (let ii = 0; ii < recipes.length; ++ii) {
+    let entry = recipes[ii];
+    if (entry[2] === inputs[0] && entry[3] === inputs[1] ||
+      entry[2] === inputs[1] && entry[3] === inputs[0]
+    ) {
+      return entry[0];
+    }
+  }
+  if (engine.DEBUG) {
+    assert(false);
+  }
+  return 'fruit';
 }
 
 const base_slurp_coords = [
@@ -142,7 +216,42 @@ const base_slurp_coords = [
   [-1, 2, 6],
   [-1, 1, 7],
 ];
+const base_contents_coords = [
+  [0, 0],
+  [1, 0],
+  [2, 0],
+  [2, 1],
+  [2, 2],
+  [1, 2],
+  [0, 2],
+  [0, 1],
+];
+const craft_map = [
+  // order: UR (output), LR (skipped), LL (input), UL (input)
+  'out',
+  null,
+  'in',
+  'in',
+];
+const craft_slurp_coords = [
+  // dx, dy, destination contents index
+  [1, -1, 0],
+  [2, 0, 0],
+  [2, 1, 1],
+  [1, 2, 1],
+  [0, 2, 2],
+  [-1, 1, 2],
+  [-1, 0, 3],
+  [0, -1, 3],
+];
+const craft_contents_coords = [
+  [1, 0],
+  [1, 1],
+  [0, 1],
+  [0, 0],
+];
 
+type FloatCB = (style: FloatStyle, x: number, y: number, str: string) => void;
 
 class SimState {
   power: number;
@@ -155,7 +264,13 @@ class SimState {
   tickables: SimMapEntry[];
   last_uid = 0;
   money_earned = 0;
-  constructor(parent: GameState) {
+  transfers: [
+    'to'|'from'|'within', // to drone
+    ResourceType, number, number, number, number
+  ][] = [];
+  float: FloatCB | null;
+  constructor(parent: GameState, float: FloatCB | null) {
+    this.float = float;
     this.parent = parent;
     let { w, h, ld, map } = parent;
     this.power = ld.starting_power;
@@ -183,10 +298,14 @@ class SimState {
         }
         if (cell.type === 'spawner') {
           let drone: Drone = {
+            last_x: ii,
+            last_y: jj,
             x: ii,
             y: jj,
+            last_rot: cell.rot || 0,
             rot: cell.rot || 0,
             contents: null,
+            last_contents: null,
             tick_id: 0,
             thinking: false,
             uid: ++this.last_uid,
@@ -196,7 +315,7 @@ class SimState {
         } else if (cell.type === 'base' || cell.type === 'resource' ||
           cell.type === 'storage' || cell.type === 'craft'
         ) {
-          let tickable = {
+          let tickable: SimMapEntry = {
             x: ii,
             y: jj,
             cell,
@@ -217,7 +336,7 @@ class SimState {
       // out of bounds
       return null;
     }
-    return this.drone_map[x][y] || null;
+    return this.drone_map[y][x] || null;
   }
 
   tickResource(ticker: SimMapEntry): void {
@@ -233,7 +352,10 @@ class SimState {
       }
       if (!drone.contents) {
         drone.contents = ticker.cell.resource!;
-        // this.resource_transfers.push([tile.resource, ticker.x, ticker.y, target_x, target_y]);
+        this.transfers.push([
+          'to', drone.contents,
+          ticker.x, ticker.y, target_x, target_y
+        ]);
         drone.gain_resource_tick = this.tick_id;
         --ticker.quantity;
         // playUISound('pickup');
@@ -252,8 +374,17 @@ class SimState {
           let resource_value = resourceValue(res);
           this.money_earned += resource_value;
           ticker.multi_contents[ii] = null;
-          // floatText((ticker.x + base_contents_coords[ii][0]), (ticker.y + base_contents_coords[ii][1]),
-          //   FLOATER_TIME_BASE_SALE, `${resource_types[res].type}: +$${resource_value}`, font_style_sale);
+
+          this.transfers.push([
+            'within', res,
+            ticker.x + base_contents_coords[ii][0], ticker.y + base_contents_coords[ii][1],
+            ticker.x + 1, ticker.y + 1,
+          ]);
+
+          this.float?.(
+            'base_sale',
+            ticker.x + base_contents_coords[ii][0], ticker.y + base_contents_coords[ii][1],
+            `${res}: +$${resource_value}`);
           // playUISound('sell');
         }
       }
@@ -264,34 +395,166 @@ class SimState {
     }
     for (let jj = 0; jj < base_slurp_coords.length; ++jj) {
       let target_contents = base_slurp_coords[jj][2];
-      if (ticker.multi_contents && ticker.multi_contents[target_contents]) {
+      if (ticker.multi_contents[target_contents]) {
         // already full
         continue;
       }
       let target_x = ticker.x + base_slurp_coords[jj][0];
       let target_y = ticker.y + base_slurp_coords[jj][1];
-      let target_actor = this.getDrone(target_x, target_y);
-      if (!target_actor || target_actor.gain_resource_tick === this.tick_id) {
+      let target_drone = this.getDrone(target_x, target_y);
+      if (!target_drone || target_drone.gain_resource_tick === this.tick_id) {
         continue;
       }
-      if (target_actor.contents) {
-        ticker.multi_contents = ticker.multi_contents || [];
-        ticker.multi_contents[target_contents] = target_actor.contents;
-        // this.resource_transfers.push([
-        //   target_actor.carrying, target_x, target_y,
-        //   ticker.x + base_contents_coords[target_contents][0], ticker.y + base_contents_coords[target_contents][1]
-        // ]);
-        target_actor.contents = null;
-        target_actor.gain_resource_tick = this.tick_id;
+      if (target_drone.contents) {
+        ticker.multi_contents[target_contents] = target_drone.contents;
+        this.transfers.push([
+          'from', target_drone.contents,
+          target_x, target_y,
+          ticker.x + base_contents_coords[target_contents][0], ticker.y + base_contents_coords[target_contents][1]
+        ]);
+        target_drone.contents = null;
+        target_drone.gain_resource_tick = this.tick_id;
         // playUISound('dropoff');
       }
     }
   }
   tickCrafter(ticker: SimMapEntry): void {
-    // TODO
+    let { cell } = ticker;
+    let rot = cell.rot || 0;
+    let out_idx = rot;
+    // craft resource if any inputs
+    let inputs: ResourceType[] = [];
+    for (let ii = 0; ii < 4; ++ii) {
+      let role = craft_map[(ii - rot + 4) % 4];
+      let content = ticker.multi_contents[ii];
+      if (role !== 'in' || !content) {
+        continue;
+      }
+      inputs.push(content);
+      this.transfers.push([
+        'within', content,
+        ticker.x + craft_contents_coords[ii][0], ticker.y + craft_contents_coords[ii][1],
+        ticker.x + craft_contents_coords[out_idx][0], ticker.y + craft_contents_coords[out_idx][1],
+      ]);
+      ticker.multi_contents[ii] = null;
+    }
+    if (inputs.length) {
+      if (ticker.multi_contents[out_idx]) {
+        // trash it
+        let trash_idx = (rot + 3) % 4;
+        this.transfers.push([
+          'within', ticker.multi_contents[out_idx],
+          ticker.x + craft_contents_coords[out_idx][0], ticker.y + craft_contents_coords[out_idx][1],
+          ticker.x + craft_contents_coords[trash_idx][0], ticker.y + craft_contents_coords[trash_idx][1]
+        ]);
+        ticker.multi_contents[out_idx] = null;
+      }
+      ticker.multi_contents[out_idx] = craftResult(inputs);
+    }
+
+    if (this.power <= 0) {
+      return;
+    }
+
+    // load if available
+    for (let ii = 0; ii < craft_slurp_coords.length; ++ii) {
+      let target_contents = craft_slurp_coords[ii][2];
+      let role = craft_map[(target_contents - rot + 4) % 4];
+      if (role === 'in' && ticker.multi_contents[target_contents] ||
+        role === 'out' && !ticker.multi_contents[target_contents] ||
+        !role
+      ) {
+        // already full or wrong role or no source
+        continue;
+      }
+      let target_x = ticker.x + craft_slurp_coords[ii][0];
+      let target_y = ticker.y + craft_slurp_coords[ii][1];
+      let target_drone = this.getDrone(target_x, target_y);
+      if (!target_drone || target_drone.gain_resource_tick === this.tick_id ||
+        role === 'in' && !target_drone.contents ||
+        role === 'out' && target_drone.contents
+      ) {
+        continue;
+      }
+      if (role === 'in') {
+        assert(target_drone.contents);
+        assert(!ticker.multi_contents[target_contents]);
+        ticker.multi_contents[target_contents] = target_drone.contents;
+        this.transfers.push([
+          'from', target_drone.contents,
+          target_x, target_y,
+          ticker.x + craft_contents_coords[target_contents][0], ticker.y + craft_contents_coords[target_contents][1]
+        ]);
+        target_drone.contents = null;
+        target_drone.gain_resource_tick = this.tick_id;
+        // playUISound('dropoff');
+      } else {
+        assert(role === 'out');
+        assert(!target_drone.contents);
+        assert(ticker.multi_contents[target_contents]);
+        target_drone.contents = ticker.multi_contents[target_contents]!;
+        ticker.multi_contents[target_contents] = null;
+        this.transfers.push([
+          'to', target_drone.contents,
+          ticker.x + craft_contents_coords[target_contents][0], ticker.y + craft_contents_coords[target_contents][1],
+          target_x, target_y
+        ]);
+        target_drone.gain_resource_tick = this.tick_id;
+        // playUISound('craft_pickup');
+      }
+    }
   }
   tickStorage(ticker: SimMapEntry): void {
-    // TODO
+    if (this.power <= 0) {
+      return;
+    }
+
+    // unload if possible
+    if (ticker.contents) {
+      for (let ii = 0; ii < 4; ++ii) {
+        let target_x = ticker.x + DX[ii];
+        let target_y = ticker.y + DY[ii];
+        let target_drone = this.getDrone(target_x, target_y);
+        if (
+          !target_drone || target_drone.contents ||
+          target_drone.gain_resource_tick === this.tick_id
+        ) {
+          continue;
+        }
+        target_drone.contents = ticker.contents!;
+        ticker.contents = null;
+        this.transfers.push([
+          'to', target_drone.contents,
+          ticker.x, ticker.y,
+          target_x, target_y
+        ]);
+        target_drone.gain_resource_tick = this.tick_id;
+      }
+    }
+
+    // load if available
+    if (!ticker.contents) {
+      for (let ii = 0; ii < 4; ++ii) {
+        let target_x = ticker.x + DX[ii];
+        let target_y = ticker.y + DY[ii];
+        let target_drone = this.getDrone(target_x, target_y);
+        if (
+          !target_drone || !target_drone.contents ||
+          target_drone.gain_resource_tick === this.tick_id
+        ) {
+          continue;
+        }
+        ticker.contents = target_drone.contents;
+        this.transfers.push([
+          'from', target_drone.contents,
+          target_x, target_y,
+          ticker.x, ticker.y
+        ]);
+        target_drone.contents = null;
+        target_drone.gain_resource_tick = this.tick_id;
+        // playUISound('dropoff');
+      }
+    }
   }
   tickTickable(ticker: SimMapEntry): void {
     switch (ticker.cell.type) {
@@ -312,6 +575,10 @@ class SimState {
     }
   }
   tickDroneEarly(drone: Drone): void {
+    drone.last_rot = drone.rot;
+    drone.last_x = drone.x;
+    drone.last_y = drone.y;
+    drone.last_contents = drone.contents;
     let x = drone.x + DX[drone.rot];
     let y = drone.y + DY[drone.rot];
     if (x < 0 || y < 0 || x >= this.parent.w || y >= this.parent.h) {
@@ -371,8 +638,12 @@ class SimState {
   }
 
   tick_id = 0;
+  isDay0(): boolean {
+    return !this.tick_id;
+  }
   tick(): void {
     ++this.tick_id;
+    this.transfers.length = 0;
     for (let jj = 0; jj < this.parent.h; ++jj) {
       for (let ii = 0; ii < this.parent.w; ++ii) {
         this.busy[jj][ii] = 0;
@@ -393,13 +664,21 @@ class SimState {
   }
 }
 
+type Floater = {
+  t: number;
+  t1: number;
+  x: number;
+  y: number;
+  str: string;
+};
+
 class GameState {
   w: number;
   h: number;
   map: (MapEntry | undefined)[][];
   ld: LevelDef;
   money: number;
-  sim_state: SimState;
+  sim_state!: SimState;
   constructor(ld: LevelDef) {
     this.ld = ld;
     let w = this.w = ld.w;
@@ -425,7 +704,7 @@ class GameState {
     view_center = [w / 2, h / 2];
 
     let rand = randCreate(ld.seed);
-    RESOURCES.forEach((resource) => {
+    BASE_RESOURCES.forEach((resource) => {
       for (let ii = 0; ii < ld.resources[resource]; ++ii) {
         while (true) {
           let x = rand.range(w);
@@ -447,15 +726,92 @@ class GameState {
       type: 'spawner',
       rot: 2,
     };
+    this.map[3][4] = {
+      type: 'rotate',
+      rot: 0,
+    };
 
-    this.sim_state = new SimState(this);
+    this.resetDay();
+  }
+
+  floaters: Floater[] = [];
+  float(style: FloatStyle, x: number, y: number, str: string): void {
+    this.floaters.push({
+      t: 0,
+      t1: FLOAT_TIME[style],
+      x, y, str,
+    });
+  }
+
+  resetDay(): void {
+    if (this.sim_state) {
+      this.money += this.sim_state.money_earned;
+    }
+    this.sim_state = new SimState(this, this.float.bind(this));
+  }
+
+  best_value = 0;
+  calcValue(): number {
+    let ss = new SimState(this, null);
+    while (ss.power >= -1) {
+      ss.tick();
+    }
+    let v = ss.money_earned;
+    if (v >= this.best_value) {
+      this.best_value = v;
+    }
+    return v;
   }
 }
 
 let game_state: GameState;
 let color_spawner = vec4(1, 1, 1, 0.5);
 
+function drawHUD(): void {
+  font.draw({
+    x: 0, w: game_width,
+    y: 0,
+    align: ALIGN.HCENTER,
+    text: `value: ${game_state.calcValue()}  money: ${game_state.money}`,
+  });
+}
+
+function drawFloaters(dt: number): void {
+  let { floaters } = game_state;
+  for (let ii = floaters.length - 1; ii >= 0; --ii) {
+    let floater = floaters[ii];
+    floater.t += dt;
+    if (floater.t >= floater.t1) {
+      ridx(floaters, ii);
+      continue;
+    }
+    font.draw({
+      style: style_floater,
+      x: floater.x * TILE_SIZE + TILE_SIZE/2,
+      y: (floater.y - floater.t / floater.t1) * TILE_SIZE,
+      z: Z.FLOATERS,
+      align: ALIGN.HCENTER,
+      text: floater.str,
+    });
+  }
+}
+
+let counter = 0;
+const TICK_TIME = 1000;
 function statePlay(dt: number): void {
+
+  counter += dt;
+  if (counter >= TICK_TIME) {
+    counter -= TICK_TIME;
+    counter = min(counter, TICK_TIME - 1);
+    game_state.sim_state.tick();
+    if (game_state.sim_state.power < -1) {
+      game_state.resetDay();
+    }
+  }
+  let t = counter / TICK_TIME;
+
+  drawHUD();
 
   let drag_ret = drag({
     x: camera2d.x0Real(),
@@ -471,7 +827,8 @@ function statePlay(dt: number): void {
   let x0 = view_center[0] * TILE_SIZE - game_width / 2;
   let y0 = view_center[1] * TILE_SIZE - game_height / 2;
   camera2d.set(x0, y0, x0 + game_width, y0 + game_height);
-  let { map, w, h } = game_state;
+  let { map, w, h, sim_state } = game_state;
+  let { drones, transfers } = sim_state;
   let z = Z.MAP;
   let bg = autoAtlas('main', 'bg');
   for (let yy = 0; yy < h; ++yy) {
@@ -524,11 +881,104 @@ function statePlay(dt: number): void {
       });
     }
   }
+  z++;
+
+  // draw drones
+  let progress = t;
+  if (sim_state.power < 0) {
+    progress = 0;
+  }
+  // [0,0.5,1] -> [0,1,1]
+  let blend = easeInOut(
+    clamp(2 * progress, 0, 1),
+    2
+  );
+  // [0,bump_time,bump_time*2,1] = [0,0.3,0,0];
+  let bump_time = 0.2;
+  let bump_blend = 0.3 * easeIn(max(0, 1 - 1/bump_time * abs(bump_time - progress)), 2);
+
+  for (let ii = 0; ii < drones.length; ++ii) {
+    let drone = drones[ii];
+    let { x, y, rot, contents, last_x, last_y, last_rot, last_contents, gain_resource_tick } = drone;
+
+    if (x !== last_x || y !== last_y) {
+      x = lerp(blend, last_x, x);
+      y = lerp(blend, last_y, y);
+    } else if (!sim_state.isDay0()) {
+      let target_x = x + DX[rot];
+      let target_y = y + DY[rot];
+      x = lerp(bump_blend, x, target_x);
+      y = lerp(bump_blend, y, target_y);
+    }
+    if (progress < 0.75) {
+      rot = last_rot;
+    }
+    if (blend < 1) {
+      contents = last_contents;
+    }
+
+    autoAtlas('main', `drone-${ROT_TO_DIR[rot]}`).draw({
+      x: x * TILE_SIZE,
+      y: y * TILE_SIZE,
+      z,
+      w: TILE_SIZE,
+      h: TILE_SIZE,
+    });
+
+    if (contents) {
+      if (gain_resource_tick === sim_state.tick_id && !last_contents) {
+        // don't draw resource
+      } else {
+        autoAtlas('main', `resource-${contents}`).draw({
+          x: x * TILE_SIZE,
+          y: y * TILE_SIZE,
+          z: z + 0.1,
+          w: TILE_SIZE,
+          h: TILE_SIZE,
+        });
+      }
+    }
+  }
+
+  // draw resource transfers
+  // [0,0.5,1] -> [0,0,1]
+  let blend_inout = easeInOut(
+    clamp(2 * progress - 1, 0, 1),
+    2
+  );
+  for (let ii = 0; ii < transfers.length; ++ii) {
+    let trans = transfers[ii];
+    let [mode, res, x, y, to_x, to_y] = trans;
+    if (mode === 'within') {
+      if (blend === 1) {
+        continue;
+      }
+      x = lerp(blend, x, to_x);
+      y = lerp(blend, y, to_y);
+    } else { // to/from
+      if (blend < 1) {
+        continue;
+      }
+      x = lerp(blend_inout, x, to_x);
+      y = lerp(blend_inout, y, to_y);
+    }
+    autoAtlas('main', `resource-${res}`).draw({
+      x: x * TILE_SIZE,
+      y: y * TILE_SIZE,
+      z: z + 0.1,
+      w: TILE_SIZE,
+      h: TILE_SIZE,
+    });
+  }
+
+  drawFloaters(dt);
+
   camera2d.pop();
 }
 
 function playInit(): void {
   engine.setState(statePlay);
+  counter = 0;
   game_state = new GameState(level_defs[0]);
 }
 
@@ -568,7 +1018,7 @@ export function main(): void {
   })) {
     return;
   }
-  // let font = engine.font;
+  font = uiGetFont();
 
   // Perfect sizes for pixely modes
   scaleSizes(13 / 32);

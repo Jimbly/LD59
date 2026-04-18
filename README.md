@@ -14,10 +14,6 @@ Start with: `npm start` (after running `npm i` once)
 
 TODO
 ====
-* Be able to run full simulation and determine money gained - display that at the top of screen + previous best
-  - half way there
-* Constantly run steps, animate, reset, repeat
-  * Give money based on simulation predicted value upon day end, no real money during day
 * Allow building and selling
 
 Plan - Drone Supervisor II Online!
