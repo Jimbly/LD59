@@ -8,18 +8,22 @@ import { autoAtlas } from 'glov/client/autoatlas';
 import * as camera2d from 'glov/client/camera2d';
 import { platformParameterGet } from 'glov/client/client_config';
 import * as engine from 'glov/client/engine';
-import { ALIGN, Font, fontStyle } from 'glov/client/font';
-import { drag } from 'glov/client/input';
+import { ALIGN, Font, fontStyle, fontStyleColored } from 'glov/client/font';
+import { drag, KEYS, mousePos, mouseUpEdge } from 'glov/client/input';
 import { netInit } from 'glov/client/net';
 import { spriteSetGet } from 'glov/client/sprite_sets';
 import {
+  button,
+  playUISound,
   scaleSizes,
+  setButtonHeight,
   setFontHeight,
+  setFontStyles,
   uiGetFont,
 } from 'glov/client/ui';
 import { randCreate } from 'glov/common/rand_alea';
 import { clamp, easeIn, easeInOut, lerp, ridx } from 'glov/common/util';
-import { JSVec2, v4copy, Vec4, vec4 } from 'glov/common/vmath';
+import { JSVec2, JSVec4, v4copy, v4lerp, Vec4, vec4 } from 'glov/common/vmath';
 import { PAL_BLACK, PAL_BORDER, PAL_WHITE, palette, palette_font } from './palette';
 
 const { abs, floor, max, min } = Math;
@@ -35,6 +39,8 @@ const game_width = 384;
 const game_height = 256;
 
 const TILE_SIZE = 15;
+const FONT_HEIGHT = 8;
+const BUTTON_HEIGHT = TILE_SIZE + 4;
 
 let font: Font;
 
@@ -50,6 +56,8 @@ const style_floater = fontStyle(null, {
   outline_width: 2.5,
   outline_color: palette_font[PAL_BLACK],
 });
+
+const SIGNAL_DIST = 5;
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const RESOURCES = [
@@ -87,11 +95,25 @@ const level_defs: LevelDef[] = [{
     stone: 3,
     fruit: 3,
   },
-}];
+}, ...(engine.DEBUG ? [{
+  w: 11,
+  h: 11,
+  starting_power: 7,
+  starting_money: 5000,
+  seed: 1234,
+  resources: {
+    wood: 3,
+    stone: 3,
+    fruit: 3,
+  },
+}] : [])];
 
-type FloatStyle = 'base_sale';
+type FloatStyle = 'base_sale' | 'error' | 'buy' | 'sell';
 const FLOAT_TIME: Record<FloatStyle, number> = {
   base_sale: 3000,
+  error: 1000,
+  buy: 1000,
+  sell: 1000,
 };
 
 const ROT_TO_DIR = [
@@ -104,6 +126,15 @@ const DX = [0, 1, 0, -1];
 const DY = [-1, 0, 1, 0];
 
 type CellType = 'base' | 'craft' | 'resource' | 'spawner' | 'rotate' | 'signal-stop' | 'signal-go' | 'storage';
+const TILE_TYPE_SIZE: Partial<Record<CellType, number>> = {
+  base: 3,
+  craft: 2,
+};
+const MAX_ROT: Partial<Record<CellType, number>> = {
+  craft: 4,
+  spawner: 4,
+  rotate: 2,
+};
 const BLOCKING_TYPE: Partial<Record<CellType, true>> = {
   base: true,
   craft: true,
@@ -130,6 +161,15 @@ type Drone = {
   thinking: boolean;
   uid: number;
   gain_resource_tick?: number;
+};
+
+const cost_table: Partial<Record<CellType, JSVec2>> = {
+  spawner: [200, 100],
+  rotate: [20, 5],
+  storage: [50, 10],
+  craft: [1000, 500],
+  'signal-stop': [20, 10],
+  'signal-go': [20, 10],
 };
 
 const BASE_SIZE = 3;
@@ -762,11 +802,153 @@ class GameState {
     }
     return v;
   }
+
+  countOf(tile_type: CellType): number {
+    let r = 0;
+    let { w, h, map } = this;
+    for (let jj = 0; jj < h; ++jj) {
+      let row = map[jj];
+      for (let ii = 0; ii < w; ++ii) {
+        let cell = row[ii];
+        if (cell && cell.type === tile_type) {
+          ++r;
+        }
+      }
+    }
+    return r;
+  }
+
+  costOf(tile_type: CellType, delta: number): number {
+    let cost_calc = cost_table[tile_type];
+    assert(cost_calc);
+    return cost_calc[0] + cost_calc[1] * (this.countOf(tile_type) + delta - 1);
+  }
+
+  buyTile(x: number, y: number, tile_type: CellType | null, rot: number): void {
+    // if (this.tutorial_state && tutorial_states[this.tutorial_state] && (
+    //   !tutorial_states[this.tutorial_state].buy_validate ||
+    //   !tutorial_states[this.tutorial_state].buy_validate(x, y, tile_type, rot)
+    // )) {
+    //   sound_manager.play('drone/place_error');
+    //   floatText(x, y, 2000, 'Invalid (please follow directions)', font_style_buy);
+    //   return;
+    // }
+    let tile = this.map[y][x];
+    let dmoney = 0;
+    if (!tile_type) {
+      // selling
+      if (tile) {
+        assert(!tile.nodraw);
+        let old_type = tile.type;
+        let size = TILE_TYPE_SIZE[old_type] || 1;
+        for (let jj = 0; jj < size; ++jj) {
+          for (let ii = 0; ii < size; ++ii) {
+            this.map[y + jj][x + ii] = undefined;
+          }
+        }
+        dmoney = this.costOf(old_type, 1);
+        // sound_manager.play('drone/sell');
+      }
+    } else {
+      if (tile && tile.type === tile_type) {
+        // just rotate
+        tile.rot = ((tile.rot || 0) + 1) % (MAX_ROT[tile.type] || 1);
+        // sound_manager.play('drone/place_rotate');
+      } else {
+        dmoney = -this.costOf(tile_type, 1);
+        if (-dmoney > this.money) {
+          // sound_manager.play('drone/place_error');
+          this.float('error', x, y, `Cannot afford $${-dmoney}`);
+          dmoney = 0;
+        } else {
+          // place new tile(s)
+          // sound_manager.play('drone/place_good');
+          let size = TILE_TYPE_SIZE[tile_type] || 1;
+          for (let jj = 0; jj < size; ++jj) {
+            for (let ii = 0; ii < size; ++ii) {
+              tile = this.map[y + jj][x + ii] = {
+                type: tile_type,
+                rot,
+                nodraw: ii !== 0 || jj !== 0,
+              };
+            }
+          }
+        }
+      }
+    }
+    if (dmoney) {
+      this.float(dmoney > 0 ? 'sell' : 'buy', x, y, `${(dmoney < 0) ? '-' : '+'}$${Math.abs(dmoney)}`);
+      this.money += dmoney;
+    }
+    // this.saveState();
+  }
+
 }
 
 let game_state: GameState;
-let color_spawner = vec4(1, 1, 1, 0.5);
+let color_spawner = v4lerp(vec4(), 0.5, palette[PAL_BORDER], palette[PAL_BLACK]);
 
+type Tool = {
+  icon: string;
+  type: CellType;
+  tooltip: string;
+};
+const TOOLS: Tool[] = [{
+  icon: 'drone-right',
+  type: 'spawner',
+  tooltip: 'Spawns a drone at the start of every day.',
+}, {
+  icon: 'rotate-clockwise',
+  type: 'rotate',
+  tooltip: 'Signals a drone to rotate when it passes over.',
+}, {
+  icon: 'crafter0',
+  type: 'craft',
+  tooltip: 'Processes resources into other resources.\n\nNote that all input' +
+    ' resources must be deposited at exactly the same time.',
+}, {
+  icon: 'storage',
+  type: 'storage',
+  tooltip: 'Allows drones to deposit and pick up resources.',
+}, {
+  icon: 'signal-stop',
+  type: 'signal-stop',
+  tooltip: 'Signals a drone to stop until a nearby GO signal is activated.',
+}, {
+  icon: 'signal-go',
+  type: 'signal-go',
+  tooltip: `Signals all stopped drones within ${SIGNAL_DIST} spaces in each direction to go.`,
+}];
+TOOLS.forEach(function (tool, idx) {
+
+  let cost_calc = cost_table[tool.type];
+  if (cost_calc) {
+    tool.tooltip += `\n\nBase Cost: $${cost_calc[0]}\nDelta Cost: $${cost_calc[1]}`;
+  }
+
+  tool.tooltip += `\n\nHotkey: ${idx + 1}`;
+});
+
+function cellFrame(type: CellType, rot: number): string {
+  if (type === 'resource') {
+    return 'spawn-wood';
+  } else if (type === 'base') {
+    return 'base';
+  } else if (type === 'craft') {
+    return `crafter${rot}`;
+  } else if (type === 'storage') {
+    return 'storage';
+  } else if (type === 'spawner') {
+    return `spawner-${ROT_TO_DIR[rot]}`;
+  } else if (type === 'rotate') {
+    return `rotate-${rot ? 'counterclockwise' : 'clockwise'}`;
+  } else {
+    return type;
+  }
+}
+
+let selected_tool = -1;
+let selected_rot = 0;
 function drawHUD(): void {
   font.draw({
     x: 0, w: game_width,
@@ -774,6 +956,42 @@ function drawHUD(): void {
     align: ALIGN.HCENTER,
     text: `value: ${game_state.calcValue()}  money: ${game_state.money}`,
   });
+
+  const TOOL_PAD = 4;
+  let x = camera2d.x0();
+  let y = camera2d.y0();
+  let z = Z.UI;
+  let w = 64;
+  x += TOOL_PAD;
+  y += TOOL_PAD;
+  w -= TOOL_PAD * 2;
+  for (let ii = 0; ii < TOOLS.length; ++ii) {
+    let tool = TOOLS[ii];
+    let cost = game_state.costOf(tool.type, 1);
+    let icon = tool.icon;
+    if (selected_tool === ii) {
+      icon = cellFrame(tool.type, selected_rot);
+      icon = icon.replace('spawner', 'drone');
+    }
+    if (button({
+      x, y, z, h: BUTTON_HEIGHT,
+      w,
+      img: autoAtlas('main', icon),
+      text: `$${cost}`,
+      tooltip: tool.tooltip,
+      base_name: selected_tool === ii ? 'buttonselected' : undefined,
+      // disabled: cost > game_state.money,
+      hotkey: KEYS['1'] + ii,
+    })) {
+      if (selected_tool === ii) {
+        selected_rot = (selected_rot + 1) % (MAX_ROT[tool.type] || 1);
+      } else {
+        selected_tool = ii;
+        selected_rot = selected_tool === 0 ? 2 : 0;
+      }
+    }
+    y += BUTTON_HEIGHT + TOOL_PAD;
+  }
 }
 
 function drawFloaters(dt: number): void {
@@ -787,12 +1005,131 @@ function drawFloaters(dt: number): void {
     }
     font.draw({
       style: style_floater,
+      alpha: min(1, (floater.t1 - floater.t) / 250),
       x: floater.x * TILE_SIZE + TILE_SIZE/2,
       y: (floater.y - floater.t / floater.t1) * TILE_SIZE,
       z: Z.FLOATERS,
       align: ALIGN.HCENTER,
       text: floater.str,
     });
+  }
+}
+
+function buildMode(): void {
+  let mouse_pos = mousePos();
+  let x = floor(mouse_pos[0] / TILE_SIZE);
+  let y = floor(mouse_pos[1] / TILE_SIZE);
+  if (x < 0 || x >= game_state.w || y < 0 || y >= game_state.h) {
+    return;
+  }
+
+  let tool = TOOLS[selected_tool] || null;
+  let tool_w = TILE_TYPE_SIZE[tool?.type] || 1;
+  let can_place = true;
+  let { map } = game_state;
+  let hover_cell_x = x;
+  let hover_cell_y = y;
+  let hover_cell: MapEntry | undefined = (map[y] || [])[x];
+  if (hover_cell && hover_cell.nodraw) {
+    let hover_type = hover_cell.type;
+    let hover_w = TILE_TYPE_SIZE[hover_type] || 1;
+    hover_cell = undefined;
+    for (let jj = 0; jj < hover_w && !hover_cell; ++jj) {
+      for (let ii = 0; ii < hover_w && !hover_cell; ++ii) {
+        let other = (map[y - jj] || [])[x - ii];
+        if (other && other.type === hover_type && !other.nodraw) {
+          hover_cell_x = x - ii;
+          hover_cell_y = y - jj;
+          hover_cell = other;
+        }
+      }
+    }
+  }
+  let can_rotate = false;
+  if (hover_cell) {
+    can_place = false;
+    if (MAX_ROT[hover_cell.type]) {
+      can_rotate = true;
+    }
+  }
+  for (let jj = 0; jj < tool_w; ++jj) {
+    for (let ii = 0; ii < tool_w; ++ii) {
+      let cell = (map[y + jj] || [])[x + ii];
+      if (cell && (!hover_cell || cell.type !== tool?.type)) {
+        can_place = false;
+      }
+    }
+  }
+
+  if (x + tool_w > game_state.w ||
+    y + tool_w > game_state.h
+  ) {
+    can_place = false;
+  }
+
+  if (tool) {
+    let color: JSVec4 | Vec4 = (can_place || can_rotate) ? [1, 1, 1, 0.5] : [1, 0, 0, 0.5];
+    let eff_rot = selected_rot;
+    let eff_x = x;
+    let eff_y = y;
+    let eff_type = tool.type;
+    let eff_w = tool_w;
+    if (can_rotate && hover_cell) {
+      eff_rot = hover_cell.rot || 0;
+      eff_x = hover_cell_x;
+      eff_y = hover_cell_y;
+      eff_type = hover_cell.type;
+      eff_w = TILE_TYPE_SIZE[eff_type] || 1;
+    }
+    if (eff_type === 'spawner') {
+      color = (can_place || can_rotate) ? color_spawner : color;
+    }
+    autoAtlas('main', cellFrame(eff_type, eff_rot)).draw({
+      x: eff_x * TILE_SIZE,
+      y: eff_y * TILE_SIZE,
+      z: Z.MAP + 2,
+      w: TILE_SIZE * eff_w,
+      h: TILE_SIZE * eff_w,
+      color,
+    });
+
+    let mouse_up;
+    if ((mouse_up = mouseUpEdge())) {
+      playUISound('button_click');
+      if (mouse_up.button === 1) {
+        if (hover_cell) {
+          for (let ii = 0; ii < TOOLS.length; ++ii) {
+            if (TOOLS[ii].type === hover_cell.type) {
+              selected_tool = ii;
+              selected_rot = hover_cell.rot || 0;
+            }
+          }
+        }
+      } else if (mouse_up.button === 2) {
+        // sell it!
+        if (hover_cell) {
+          for (let ii = 0; ii < TOOLS.length; ++ii) {
+            if (TOOLS[ii].type === hover_cell.type) {
+              selected_tool = ii;
+              selected_rot = hover_cell.rot || 0;
+            }
+          }
+          game_state.buyTile(hover_cell_x, hover_cell_y, null, 0);
+        } else {
+          game_state.float('error', x, y, 'Nothing to sell here');
+        }
+      } else {
+        // place it!
+        if (can_rotate) {
+          game_state.buyTile(hover_cell_x, hover_cell_y, eff_type, eff_rot);
+          selected_rot = hover_cell!.rot || 0;
+        } else if (can_place) {
+          game_state.buyTile(x, y, tool.type, selected_rot);
+        } else {
+          game_state.float('error', x, y, 'Placement blocked');
+        }
+      }
+    }
   }
 }
 
@@ -842,34 +1179,22 @@ function statePlay(dt: number): void {
         w: TILE_SIZE,
         h: TILE_SIZE,
       });
-      let ww = 1;
       if (!tile) {
         continue;
       }
       if (tile.nodraw) {
         continue;
       }
-      let frame;
+      let ww = TILE_TYPE_SIZE[tile.type] || 1;
       let color: Vec4 | undefined;
       let zz = z;
+
+      let frame = cellFrame(tile.type, tile.rot!);
       if (tile.type === 'resource') {
         frame = `spawn-${tile.resource!}`;
-      } else if (tile.type === 'base') {
-        frame = 'base';
-        ww = 3;
-      } else if (tile.type === 'craft') {
-        frame = `crafter${tile.rot}`;
-        ww = 2;
-      } else if (tile.type === 'storage') {
-        frame = 'storage';
       } else if (tile.type === 'spawner') {
-        frame = `spawner-${ROT_TO_DIR[tile.rot!]}`;
         color = color_spawner;
         zz -= 0.1;
-      } else if (tile.type === 'rotate') {
-        frame = `rotate-${tile.rot ? 'counterclockwise' : 'clockwise'}`;
-      } else {
-        frame = tile.type;
       }
       autoAtlas('main', frame).draw({
         x: xx * TILE_SIZE,
@@ -917,7 +1242,11 @@ function statePlay(dt: number): void {
       contents = last_contents;
     }
 
-    autoAtlas('main', `drone-${ROT_TO_DIR[rot]}`).draw({
+    let frame = `drone-${ROT_TO_DIR[rot]}`;
+    if (sim_state.power < 0) {
+      frame = 'drone-sleep';
+    }
+    autoAtlas('main', frame).draw({
       x: x * TILE_SIZE,
       y: y * TILE_SIZE,
       z,
@@ -973,13 +1302,17 @@ function statePlay(dt: number): void {
 
   drawFloaters(dt);
 
+  buildMode();
+
   camera2d.pop();
 }
 
 function playInit(): void {
   engine.setState(statePlay);
   counter = 0;
-  game_state = new GameState(level_defs[0]);
+  selected_tool = engine.DEBUG ? 0 : -1;
+  selected_rot = engine.DEBUG ? 2 : 0;
+  game_state = new GameState(level_defs[engine.DEBUG ? 1 : 0]);
 }
 
 export function main(): void {
@@ -1013,7 +1346,14 @@ export function main(): void {
     font: font_def,
     viewport_postprocess: false,
     antialias: false,
-    ui_sprites,
+    ui_sprites: {
+      ...ui_sprites,
+      color_set_shades: [1,1,1],
+      buttonselected_regular: { atlas: 'pixely', name: 'button_selected' },
+      buttonselected_down: { atlas: 'pixely', name: 'button_down' },
+      buttonselected_rollover: { atlas: 'pixely', name: 'button_rollover' },
+      buttonselected_disabled: { atlas: 'pixely', name: 'button_disabled' },
+    },
     pixel_perfect,
   })) {
     return;
@@ -1022,7 +1362,14 @@ export function main(): void {
 
   // Perfect sizes for pixely modes
   scaleSizes(13 / 32);
-  setFontHeight(8);
+  setFontHeight(FONT_HEIGHT);
+  setButtonHeight(BUTTON_HEIGHT);
+  setFontStyles(
+    fontStyleColored(null, palette_font[PAL_BLACK]),
+    fontStyleColored(null, palette_font[PAL_BLACK]),
+    fontStyleColored(null, palette_font[PAL_BLACK]),
+    fontStyleColored(null, palette_font[PAL_BLACK]),
+  );
 
   gl.clearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
   v4copy(engine.border_clear_color, clear_color);
