@@ -21,6 +21,8 @@ import { spriteSetGet } from 'glov/client/sprite_sets';
 import { BLEND_ADDITIVE } from 'glov/client/sprites';
 import {
   button,
+  buttonImage,
+  ButtonRet,
   drawCircle,
   drawRect2,
   playUISound,
@@ -30,6 +32,7 @@ import {
   setFontStyles,
   uiGetFont,
 } from 'glov/client/ui';
+import * as walltime from 'glov/client/walltime';
 import { randCreate } from 'glov/common/rand_alea';
 import {
   clamp,
@@ -73,6 +76,9 @@ const game_height = 256;
 const TILE_SIZE = 15;
 const FONT_HEIGHT = 8;
 const BUTTON_HEIGHT = TILE_SIZE + 4;
+
+const TICK_TIME = 1000;
+const PAYOUT_TIME = TICK_TIME * 6;
 
 let font: Font;
 
@@ -857,10 +863,14 @@ class GameState {
   money: number;
   sim_state!: SimState;
   ld_idx: number;
+  game_start_time: number;
+  game_payout_index: number;
   constructor(ld_idx: number) {
     let ld = level_defs[ld_idx];
     this.ld_idx = ld_idx;
     this.ld = ld;
+    this.game_start_time = walltime.now() - PAYOUT_TIME / 2;
+    this.game_payout_index = 0;
     let w = this.w = ld.w;
     let h = this.h = ld.h;
     this.money = ld.starting_money;
@@ -956,13 +966,19 @@ class GameState {
     this.sim_state = new SimState(this, this.float.bind(this));
   }
   awardMoney(): void {
-    let dm = this.calcValue();
-    if (dm) {
-      this.money += dm;
-      uiFloat('day_end',
-        camera2d.x0() + camera2d.w() * 0.5,
-        camera2d.y0() + FONT_HEIGHT * 2,
-        `Day end: +$${dm}`);
+    let expected_idx = floor((walltime.now() - this.game_start_time) / PAYOUT_TIME);
+    let delta = expected_idx - this.game_payout_index;
+    if (delta > 0) {
+      let dm = this.calcValue();
+      if (dm) {
+        dm *= delta;
+        this.money += dm;
+        uiFloat('day_end',
+          camera2d.x0() + camera2d.w() * 0.5,
+          camera2d.y0() + FONT_HEIGHT * 2,
+          `Day end${delta > 1 ? ` (x${delta})` : ''}: +$${dm}`);
+      }
+      this.game_payout_index = expected_idx;
     }
   }
 
@@ -1159,7 +1175,8 @@ function cellFrame(type: CellType, rot: number): string {
 
 let selected_tool = -1;
 let selected_rot = 0;
-function drawHUD(): void {
+let is_ff = false;
+function drawHUD(eff_is_ff: boolean): void {
   let y = camera2d.y0();
   let max_power = game_state.maxPower();
   font.draw({
@@ -1213,6 +1230,30 @@ function drawHUD(): void {
     align: ALIGN.HWRAP | ALIGN.HCENTER,
     text: `Money:\n$${game_state.money}\n\nNet worth:\n$${game_state.calcNetWorth()}`,
   });
+
+  x = camera2d.x1();
+  y = camera2d.y1() - BUTTON_HEIGHT - TOOL_PAD;
+  function gamebutton(icon: string, tooltip: string, hotkey: number): ButtonRet | null {
+    x -= BUTTON_HEIGHT + TOOL_PAD;
+    return buttonImage({
+      x, y, w: BUTTON_HEIGHT, h: BUTTON_HEIGHT,
+      img: autoAtlas('main', icon),
+      hotkey,
+      tooltip,
+    });
+  }
+
+  if (gamebutton('icon-menu', 'Save and exit to menu.\n\nHotkey: M', KEYS.M)) {
+    // TODO
+  }
+  if (gamebutton(eff_is_ff ? 'icon-ff' : 'icon-play', 'Toggle game speed.\n\nNote: money is awarded in' +
+    ' real-time, even when you are not logged in, the game speed toggle is only' +
+    ' to assist in orchestrating your drones.\n\n' +
+    'Hotkey: Hold SHIFT, or press F to toggle.', KEYS.F)
+  ) {
+    is_ff = !is_ff;
+  }
+
 }
 
 function drawFloaters(floaters: Floater[], dt: number, z: number, size?: number): void {
@@ -1390,10 +1431,10 @@ function buildMode(): void {
 }
 
 let counter = 0;
-const TICK_TIME = 1000;
 function statePlay(dt: number): void {
   let dt_orig = dt;
-  if (keyDown(KEYS.SHIFT)) {
+  let eff_is_ff = is_ff || keyDown(KEYS.SHIFT);
+  if (eff_is_ff) {
     dt *= 5;
   }
   counter += dt;
@@ -1410,7 +1451,7 @@ function statePlay(dt: number): void {
   }
   let t = counter / TICK_TIME;
 
-  drawHUD();
+  drawHUD(eff_is_ff);
 
   let fade = game_state.sim_state.tick_id === 0 ?
     1 - counter / TICK_TIME * 2 :
@@ -1424,7 +1465,7 @@ function statePlay(dt: number): void {
     w: camera2d.wReal(),
     h: camera2d.hReal(),
   };
-  if (fade < 1) {
+  if (fade > 0) {
     drawRect2({
       ...full_rect,
       z: Z.UI - 10,
@@ -1706,6 +1747,7 @@ function playInit(): void {
   counter = 0;
   selected_tool = engine.DEBUG ? 0 : -1;
   selected_rot = 0;
+  is_ff = false;
   game_state = new GameState(engine.DEBUG ? 1 : 0);
 }
 
