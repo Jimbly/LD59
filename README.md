@@ -14,11 +14,9 @@ Start with: `npm start` (after running `npm i` once)
 
 TODO
 ====
-* Allow building and selling
-* test crafting, storage
-  * draw resources on storage and crafters
 * resource limits
 * fade day in/out and show money gained
+* accumulate money on base, don't do floaters in the same way as buy/sell?
 
 Plan - Drone Supervisor II Online!
 ==================================

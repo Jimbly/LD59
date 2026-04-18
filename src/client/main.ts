@@ -267,11 +267,11 @@ const base_contents_coords = [
   [0, 1],
 ];
 const craft_map = [
-  // order: UR (output), LR (skipped), LL (input), UL (input)
+  // order: UR (output), LR (input), LL (input), UL (skipped)
   'out',
+  'in',
+  'in',
   null,
-  'in',
-  'in',
 ];
 const craft_slurp_coords = [
   // dx, dy, destination contents index
@@ -305,7 +305,7 @@ class SimState {
   last_uid = 0;
   money_earned = 0;
   transfers: [
-    'to'|'from'|'within', // to drone
+    'spawn'|'pickup'|'from'|'within', // to drone
     ResourceType, number, number, number, number
   ][] = [];
   float: FloatCB | null;
@@ -393,7 +393,7 @@ class SimState {
       if (!drone.contents) {
         drone.contents = ticker.cell.resource!;
         this.transfers.push([
-          'to', drone.contents,
+          'spawn', drone.contents,
           ticker.x, ticker.y, target_x, target_y
         ]);
         drone.gain_resource_tick = this.tick_id;
@@ -461,12 +461,13 @@ class SimState {
   tickCrafter(ticker: SimMapEntry): void {
     let { cell } = ticker;
     let rot = cell.rot || 0;
-    let out_idx = rot;
+    let out_pos = rot;
     // craft resource if any inputs
     let inputs: ResourceType[] = [];
     for (let ii = 0; ii < 4; ++ii) {
-      let role = craft_map[(ii - rot + 4) % 4];
-      let content = ticker.multi_contents[ii];
+      let target = (ii - rot + 4) % 4;
+      let role = craft_map[target];
+      let content = ticker.multi_contents[target];
       if (role !== 'in' || !content) {
         continue;
       }
@@ -474,32 +475,34 @@ class SimState {
       this.transfers.push([
         'within', content,
         ticker.x + craft_contents_coords[ii][0], ticker.y + craft_contents_coords[ii][1],
-        ticker.x + craft_contents_coords[out_idx][0], ticker.y + craft_contents_coords[out_idx][1],
+        ticker.x + craft_contents_coords[out_pos][0], ticker.y + craft_contents_coords[out_pos][1],
       ]);
-      ticker.multi_contents[ii] = null;
+      ticker.multi_contents[target] = null;
     }
     if (inputs.length) {
-      if (ticker.multi_contents[out_idx]) {
+      if (ticker.multi_contents[0]) {
         // trash it
-        let trash_idx = (rot + 3) % 4;
+        let trash_idx = 3;
+        let trash_pos = (trash_idx - rot + 4) % 4;
         this.transfers.push([
-          'within', ticker.multi_contents[out_idx],
-          ticker.x + craft_contents_coords[out_idx][0], ticker.y + craft_contents_coords[out_idx][1],
-          ticker.x + craft_contents_coords[trash_idx][0], ticker.y + craft_contents_coords[trash_idx][1]
+          'within', ticker.multi_contents[0],
+          ticker.x + craft_contents_coords[out_pos][0], ticker.y + craft_contents_coords[out_pos][1],
+          ticker.x + craft_contents_coords[trash_pos][0], ticker.y + craft_contents_coords[trash_pos][1]
         ]);
-        ticker.multi_contents[out_idx] = null;
+        ticker.multi_contents[0] = null;
       }
-      ticker.multi_contents[out_idx] = craftResult(inputs);
+      ticker.multi_contents[0] = craftResult(inputs);
     }
 
     if (this.power <= 0) {
       return;
     }
 
-    // load if available
+    // load/unload if available
     for (let ii = 0; ii < craft_slurp_coords.length; ++ii) {
-      let target_contents = craft_slurp_coords[ii][2];
-      let role = craft_map[(target_contents - rot + 4) % 4];
+      let target_pos = craft_slurp_coords[ii][2];
+      let target_contents = (target_pos - rot + 4) % 4;
+      let role = craft_map[target_contents];
       if (role === 'in' && ticker.multi_contents[target_contents] ||
         role === 'out' && !ticker.multi_contents[target_contents] ||
         !role
@@ -523,7 +526,7 @@ class SimState {
         this.transfers.push([
           'from', target_drone.contents,
           target_x, target_y,
-          ticker.x + craft_contents_coords[target_contents][0], ticker.y + craft_contents_coords[target_contents][1]
+          ticker.x + craft_contents_coords[target_pos][0], ticker.y + craft_contents_coords[target_pos][1]
         ]);
         target_drone.contents = null;
         target_drone.gain_resource_tick = this.tick_id;
@@ -535,8 +538,8 @@ class SimState {
         target_drone.contents = ticker.multi_contents[target_contents]!;
         ticker.multi_contents[target_contents] = null;
         this.transfers.push([
-          'to', target_drone.contents,
-          ticker.x + craft_contents_coords[target_contents][0], ticker.y + craft_contents_coords[target_contents][1],
+          'pickup', target_drone.contents,
+          ticker.x + craft_contents_coords[target_pos][0], ticker.y + craft_contents_coords[target_pos][1],
           target_x, target_y
         ]);
         target_drone.gain_resource_tick = this.tick_id;
@@ -564,7 +567,7 @@ class SimState {
         target_drone.contents = ticker.contents!;
         ticker.contents = null;
         this.transfers.push([
-          'to', target_drone.contents,
+          'pickup', target_drone.contents,
           ticker.x, ticker.y,
           target_x, target_y
         ]);
@@ -719,7 +722,10 @@ class GameState {
   ld: LevelDef;
   money: number;
   sim_state!: SimState;
-  constructor(ld: LevelDef) {
+  ld_idx: number;
+  constructor(ld_idx: number) {
+    let ld = level_defs[ld_idx];
+    this.ld_idx = ld_idx;
     this.ld = ld;
     let w = this.w = ld.w;
     let h = this.h = ld.h;
@@ -761,15 +767,35 @@ class GameState {
       }
     });
 
-    // debug
-    this.map[0][4] = {
-      type: 'spawner',
-      rot: 2,
-    };
-    this.map[3][4] = {
-      type: 'rotate',
-      rot: 0,
-    };
+    if (engine.DEBUG) {
+      this.map[0][0] = {
+        type: 'spawner',
+        rot: 1,
+      };
+      this.map[0][1] = {
+        type: 'rotate',
+        rot: 0,
+      };
+      if (0) {
+        this.map[2][3] = {
+          type: 'storage',
+          rot: 0,
+        };
+        this.map[3][3] = {
+          type: 'storage',
+          rot: 0,
+        };
+      } else {
+        this.map[1][2] = {
+          type: 'craft',
+          rot: 2,
+        };
+        this.map[3][2] = {
+          type: 'craft',
+          rot: 1,
+        };
+      }
+    }
 
     this.resetDay();
   }
@@ -1165,11 +1191,23 @@ function statePlay(dt: number): void {
   let y0 = view_center[1] * TILE_SIZE - game_height / 2;
   camera2d.set(x0, y0, x0 + game_width, y0 + game_height);
   let { map, w, h, sim_state } = game_state;
-  let { drones, transfers } = sim_state;
+  let { drones, transfers, sim_map } = sim_state;
   let z = Z.MAP;
   let bg = autoAtlas('main', 'bg');
+
+  function isTransferTo(x: number, y: number): 'from' | 'within' | null {
+    for (let ii = 0; ii < transfers.length; ++ii) {
+      let elem = transfers[ii];
+      if ((elem[0] === 'from' || elem[0] === 'within') && elem[4] === x && elem[5] === y) {
+        return elem[0];
+      }
+    }
+    return null;
+  }
+
   for (let yy = 0; yy < h; ++yy) {
     let row = map[yy];
+    let sim_row = sim_map[yy];
     for (let xx = 0; xx < w; ++xx) {
       let tile = row[xx];
       bg.draw({
@@ -1204,6 +1242,49 @@ function statePlay(dt: number): void {
         h: TILE_SIZE * ww,
         color,
       });
+
+      let sim_tile = sim_row[xx];
+      if (sim_tile) {
+        if (sim_tile.contents) {
+          if (isTransferTo(xx, yy)) {
+            // hide
+          } else {
+            autoAtlas('main', `resource-${sim_tile.contents}`).draw({
+              x: xx * TILE_SIZE,
+              y: yy * TILE_SIZE,
+              z: zz + 0.1,
+              w: TILE_SIZE,
+              h: TILE_SIZE,
+              color,
+            });
+          }
+        } else if (tile.type === 'craft') {
+          for (let ii = 0; ii < sim_tile.multi_contents.length; ++ii) {
+            let content = sim_tile.multi_contents[ii];
+            if (content) {
+              let coords = craft_contents_coords[(ii + (tile.rot || 0)) % 4];
+              let x2 = xx + coords[0];
+              let y2 = yy + coords[1];
+              let trans = isTransferTo(x2, y2);
+              if (
+                trans === 'from' ||
+                trans === 'within' && t < 0.5
+              ) {
+                // hide
+              } else {
+                autoAtlas('main', `resource-${content}`).draw({
+                  x: x2 * TILE_SIZE,
+                  y: y2 * TILE_SIZE,
+                  z: zz + 0.1,
+                  w: TILE_SIZE,
+                  h: TILE_SIZE,
+                  color,
+                });
+              }
+            }
+          }
+        }
+      }
     }
   }
   z++;
@@ -1285,7 +1366,7 @@ function statePlay(dt: number): void {
       x = lerp(blend, x, to_x);
       y = lerp(blend, y, to_y);
     } else { // to/from
-      if (blend < 1) {
+      if (blend < 1 && (mode !== 'pickup' || isTransferTo(x, y))) {
         continue;
       }
       x = lerp(blend_inout, x, to_x);
@@ -1312,7 +1393,7 @@ function playInit(): void {
   counter = 0;
   selected_tool = engine.DEBUG ? 0 : -1;
   selected_rot = engine.DEBUG ? 2 : 0;
-  game_state = new GameState(level_defs[engine.DEBUG ? 1 : 0]);
+  game_state = new GameState(engine.DEBUG ? 1 : 0);
 }
 
 export function main(): void {
