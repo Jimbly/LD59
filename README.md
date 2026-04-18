@@ -1,4 +1,4 @@
-LD59 - Theme TBD
+LD59 - Theme Signal & Machines
 ============================
 
 Ludum Dare 59 Entry by Jimbly - "Title TBD"
@@ -10,3 +10,47 @@ Acknowledgements:
 * TODO
 
 Start with: `npm start` (after running `npm i` once)
+
+
+TODO
+====
+* Be able to run full simulation and determine money gained - display that at the top of screen + previous best
+  - half way there
+* Constantly run steps, animate, reset, repeat
+  * Give money based on simulation predicted value upon day end, no real money during day
+* Allow building and selling
+
+Plan - Drone Supervisor II Online!
+==================================
+
+Primitives:
+* drone
+* rotate clockwise/counter-clockwise
+* 2-input crafting machine - must be delivered simultaneously or output is input
+* stop (free)
+* go - radius 5-7ish? (free)
+* 1-input storage
+* (multiplayer) sign
+
+Upgrades:
+* Drone battery
+
+Resources:
+* fruit (apples)
+* wood
+* stone
+* 3 colored gems (1 per player)
+
+
+Goal ~8 specific recipes?
+fruit + ? = fruit
+fruit + wood = beer
+fruit + stone = jam (or fruit + fruit?)
+wood + stone = fire
+wood + ? = wood
+stone + ? = stone
+
+beer + fire = game
+beer + stone = acid
+jam + fruit = pie
+game + jam = LD
