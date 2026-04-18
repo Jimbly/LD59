@@ -84,7 +84,7 @@ const style_floater = fontStyle(null, {
   outline_color: palette_font[PAL_BLACK],
 });
 
-const SIGNAL_DIST = 4;
+const SIGNAL_DIST = 3;
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const RESOURCES = [
@@ -191,7 +191,7 @@ type Drone = {
   gain_resource_tick?: number;
 };
 
-const cost_table: Partial<Record<CellType, JSVec2>> = {
+const COST_TABLE: Partial<Record<CellType, JSVec2>> = {
   spawner: [200, 100],
   rotate: [20, 5],
   storage: [50, 10],
@@ -927,7 +927,7 @@ class GameState {
   }
 
   costOf(tile_type: CellType, delta: number): number {
-    let cost_calc = cost_table[tile_type];
+    let cost_calc = COST_TABLE[tile_type];
     assert(cost_calc);
     return cost_calc[0] + cost_calc[1] * (this.countOf(tile_type) + delta - 1);
   }
@@ -994,11 +994,11 @@ class GameState {
 }
 
 let game_state: GameState;
-let color_spawner = v4lerp(vec4(), 0.5, palette[PAL_BORDER], palette[PAL_BLACK]);
+let color_spawner = false ? v4lerp(vec4(), 0.5, palette[PAL_BORDER], palette[PAL_BLACK]) : palette[PAL_BLACK];
 
 type Tool = {
   icon: string;
-  type: CellType;
+  type: CellType | null;
   tooltip: string;
 };
 const TOOLS: Tool[] = [{
@@ -1026,12 +1026,18 @@ const TOOLS: Tool[] = [{
   icon: 'signal-go',
   type: 'signal-go',
   tooltip: `Signals all stopped drones within ${SIGNAL_DIST} spaces in each direction to go.`,
+}, {
+  icon: 'icon-sell',
+  type: null,
+  tooltip: 'Sell back items for their cost.\n\nHINT: Right-click to sell/pick up items more easily.'
 }];
 TOOLS.forEach(function (tool, idx) {
 
-  let cost_calc = cost_table[tool.type];
-  if (cost_calc) {
-    tool.tooltip += `\n\nBase Cost: $${cost_calc[0]}\nDelta Cost: $${cost_calc[1]}`;
+  if (tool.type) {
+    let cost_calc = COST_TABLE[tool.type];
+    if (cost_calc) {
+      tool.tooltip += `\n\nBase Cost: $${cost_calc[0]}\nDelta Cost: $${cost_calc[1]}`;
+    }
   }
 
   tool.tooltip += `\n\nHotkey: ${idx + 1}`;
@@ -1075,9 +1081,9 @@ function drawHUD(): void {
   w -= TOOL_PAD * 2;
   for (let ii = 0; ii < TOOLS.length; ++ii) {
     let tool = TOOLS[ii];
-    let cost = game_state.costOf(tool.type, 1);
+    let cost = tool.type ? game_state.costOf(tool.type, 1) : 0;
     let icon = tool.icon;
-    if (selected_tool === ii) {
+    if (selected_tool === ii && tool.type) {
       icon = cellFrame(tool.type, selected_rot);
       icon = icon.replace('spawner', 'drone');
     }
@@ -1085,13 +1091,13 @@ function drawHUD(): void {
       x, y, z, h: BUTTON_HEIGHT,
       w,
       img: autoAtlas('main', icon),
-      text: `$${cost}`,
+      text: cost ? `$${cost}` : 'Sell',
       tooltip: tool.tooltip,
       base_name: selected_tool === ii ? 'buttonselected' : undefined,
       // disabled: cost > game_state.money,
       hotkey: KEYS['1'] + ii,
     })) {
-      if (selected_tool === ii) {
+      if (selected_tool === ii && tool.type) {
         selected_rot = (selected_rot + 1) % (MAX_ROT[tool.type] || 1);
       } else {
         selected_tool = ii;
@@ -1132,7 +1138,8 @@ function buildMode(): void {
   }
 
   let tool = TOOLS[selected_tool] || null;
-  let tool_w = TILE_TYPE_SIZE[tool?.type] || 1;
+  let tool_type = tool?.type || null;
+  let tool_w = tool_type && TILE_TYPE_SIZE[tool_type] || 1;
   let can_place = true;
   let { map } = game_state;
   let hover_cell_x = x;
@@ -1163,7 +1170,7 @@ function buildMode(): void {
   for (let jj = 0; jj < tool_w; ++jj) {
     for (let ii = 0; ii < tool_w; ++ii) {
       let cell = (map[y + jj] || [])[x + ii];
-      if (cell && (!hover_cell || cell.type !== tool?.type)) {
+      if (cell && (!hover_cell || cell.type !== tool_type)) {
         can_place = false;
       }
     }
@@ -1175,7 +1182,9 @@ function buildMode(): void {
     can_place = false;
   }
 
-  if (hover_cell && hover_cell.type === 'signal-go') {
+  let is_selling = tool && !tool_type;
+
+  if (hover_cell && hover_cell.type === 'signal-go' || tool_type === 'signal-go' && can_place) {
     for (let jj = -SIGNAL_DIST; jj <= SIGNAL_DIST; ++jj) {
       for (let ii = -SIGNAL_DIST; ii <= SIGNAL_DIST; ++ii) {
         autoAtlas('main', 'signal-preview').draw({
@@ -1190,7 +1199,11 @@ function buildMode(): void {
     }
   }
 
-  if (tool) {
+  if (is_selling) {
+    can_place = Boolean(hover_cell && COST_TABLE[hover_cell.type]);
+  }
+
+  if (tool && tool.type || tool && is_selling) {
     let color: JSVec4 | Vec4 = (can_place || can_rotate) ? [1, 1, 1, 0.5] : [1, 0, 0, 0.5];
     let eff_rot = selected_rot;
     let eff_x = x;
@@ -1204,17 +1217,28 @@ function buildMode(): void {
       eff_type = hover_cell.type;
       eff_w = TILE_TYPE_SIZE[eff_type] || 1;
     }
-    if (eff_type === 'spawner') {
-      color = (can_place || can_rotate) ? color_spawner : color;
+    if (eff_type === 'spawner' && !is_selling) {
+      color = (can_place || can_rotate) ? [color_spawner[0], color_spawner[1], color_spawner[2], 0.5] : color;
     }
-    autoAtlas('main', cellFrame(eff_type, eff_rot)).draw({
-      x: eff_x * TILE_SIZE,
-      y: eff_y * TILE_SIZE,
-      z: Z.MAP + 2,
-      w: TILE_SIZE * eff_w,
-      h: TILE_SIZE * eff_w,
-      color,
-    });
+    if (is_selling) {
+      autoAtlas('main', 'icon-sell').draw({
+        x: eff_x * TILE_SIZE,
+        y: eff_y * TILE_SIZE,
+        z: Z.MAP + 2,
+        w: TILE_SIZE * eff_w,
+        h: TILE_SIZE * eff_w,
+        color,
+      });
+    } else {
+      autoAtlas('main', cellFrame(eff_type!, eff_rot)).draw({
+        x: eff_x * TILE_SIZE,
+        y: eff_y * TILE_SIZE,
+        z: Z.MAP + 2,
+        w: TILE_SIZE * eff_w,
+        h: TILE_SIZE * eff_w,
+        color,
+      });
+    }
 
     let mouse_up;
     if ((mouse_up = mouseUpEdge())) {
@@ -1228,13 +1252,15 @@ function buildMode(): void {
             }
           }
         }
-      } else if (mouse_up.button === 2) {
+      } else if (mouse_up.button === 2 || is_selling) {
         // sell it!
-        if (hover_cell) {
-          for (let ii = 0; ii < TOOLS.length; ++ii) {
-            if (TOOLS[ii].type === hover_cell.type) {
-              selected_tool = ii;
-              selected_rot = hover_cell.rot || 0;
+        if (hover_cell && COST_TABLE[hover_cell.type]) {
+          if (!is_selling || mouse_up.button === 2) {
+            for (let ii = 0; ii < TOOLS.length; ++ii) {
+              if (TOOLS[ii].type === hover_cell.type) {
+                selected_tool = ii;
+                selected_rot = hover_cell.rot || 0;
+              }
             }
           }
           game_state.buyTile(hover_cell_x, hover_cell_y, null, 0);
@@ -1523,8 +1549,8 @@ function statePlay(dt: number): void {
 function playInit(): void {
   engine.setState(statePlay);
   counter = 0;
-  selected_tool = engine.DEBUG ? 0 : -1;
-  selected_rot = engine.DEBUG ? 2 : 0;
+  selected_tool = engine.DEBUG ? 6 : -1;
+  selected_rot = 0;
   game_state = new GameState(engine.DEBUG ? 1 : 0);
 }
 
