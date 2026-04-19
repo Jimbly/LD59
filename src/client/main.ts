@@ -2657,7 +2657,7 @@ function statePlay(dt: number): void {
     drawRect2({
       ...full_rect,
       z: Z.UI - 10,
-      color: [palette[PAL_BLACK][0], palette[PAL_BLACK][1], palette[PAL_BLACK][2], fade],
+      color: [palette[PAL_BLACK][0], palette[PAL_BLACK][1], palette[PAL_BLACK][2], fade * 0.6],
     });
   }
 
