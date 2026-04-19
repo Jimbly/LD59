@@ -2555,12 +2555,14 @@ function statePlay(dt: number): void {
       let sim_tile = sim_row[xx];
       if (tile.type === 'resource') {
         frame = `spawn-${tile.resource!}`;
-        if (sim_tile && !sim_tile.quantity) {
-          if (t < 0.5 && isTransferFrom(xx, yy)) {
-            // leave alone
-          } else {
-            color = [palette[PAL_BLACK][0], palette[PAL_BLACK][1], palette[PAL_BLACK][2], 0.5];
-          }
+        let quantity = sim_tile ? sim_tile.quantity : 3;
+        if (t < 0.5 && isTransferFrom(xx, yy)) {
+          ++quantity;
+        }
+        if (!quantity && false) {
+          color = [palette[PAL_BLACK][0], palette[PAL_BLACK][1], palette[PAL_BLACK][2], 0.5];
+        } else {
+          frame += quantity;
         }
       } else if (tile.type === 'spawner') {
         color = color_spawner;
