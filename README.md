@@ -15,17 +15,17 @@ Start with: `npm start` (after running `npm i` once)
 TODO
 ====
 
+WASD should scroll the play field
 Multiplayer logic
   goal: total revenue / day
+    show own revenue under money?
 High scores (minimum total net worth to meet revenue goal, fewest day ticks secondary)
-Sign object (for multiplayer or personal notes)
-WASD should scroll the play field
 
 Questions:
 * Can we upgrade day length?  If not, then we need faster locomotion / cannons, or longer days and a way to skip
 * Either is probably fine for MP, other people's drones just run out of power sooner
 
-Additional recipes and resources (unique colored gems)
+Additional recipes and resources (unique colored gems - spawn in half/quandrant near other players!)
 
 Show recipes somewhere (just open a recipe book overlay?  tooltip on each resource?)
 

@@ -25,6 +25,7 @@ import {
   mouseUpEdge,
 } from 'glov/client/input';
 import { markdownAuto } from 'glov/client/markdown';
+import { markdownSetColorStyle } from 'glov/client/markdown_renderables';
 import { ClientChannelWorker, netInit } from 'glov/client/net';
 import { socialInit } from 'glov/client/social';
 import { spriteSetGet } from 'glov/client/sprite_sets';
@@ -35,6 +36,9 @@ import {
   ButtonRet,
   drawCircle,
   drawRect2,
+  drawTooltip,
+  isMenuUp,
+  modalTextEntry,
   panel,
   playUISound,
   scaleSizes,
@@ -42,8 +46,10 @@ import {
   setFontHeight,
   setFontStyles,
   uiGetFont,
+  uiSetPanelColor,
 } from 'glov/client/ui';
 import * as walltime from 'glov/client/walltime';
+import { profanityFilter, profanityStartup } from 'glov/client/words/profanity';
 import { Differ, differCreate } from 'glov/common/differ';
 import { randCreate } from 'glov/common/rand_alea';
 import { DataObject, TSMap } from 'glov/common/types';
@@ -58,6 +64,7 @@ import {
 import {
   JSVec2,
   JSVec4,
+  unit_vec,
   v4copy,
   v4lerp,
   v4set,
@@ -88,6 +95,7 @@ Z.TUT = 400;
 
 const TICK_TIME = 1000;
 const PAYOUT_TIME = TICK_TIME * 6;
+const MAX_PAYOUT_DAYS = 99;
 
 let font: Font;
 
@@ -245,7 +253,7 @@ const ROT_TO_DIR = [
 const DX = [0, 1, 0, -1];
 const DY = [-1, 0, 1, 0];
 
-type CellType = 'base' | 'craft' | 'resource' | 'spawner' | 'rotate' | 'signal-stop' | 'signal-go' | 'storage';
+type CellType = 'base' | 'craft' | 'resource' | 'spawner' | 'rotate' | 'signal-stop' | 'signal-go' | 'storage' | 'sign';
 const TILE_TYPE_SIZE: Partial<Record<CellType, number>> = {
   base: 3,
   craft: 2,
@@ -260,12 +268,14 @@ const BLOCKING_TYPE: Partial<Record<CellType, true>> = {
   craft: true,
   resource: true,
   storage: true,
+  sign: true,
 };
 type MapEntry = {
   type: CellType;
   resource?: ResourceType;
   nodraw?: boolean;
   rot?: number;
+  text?: string;
 };
 
 type PlayerData = {
@@ -310,6 +320,7 @@ const COST_TABLE: Partial<Record<CellType, JSVec2>> = {
   craft: [1000, 500],
   'signal-stop': [20, 10],
   'signal-go': [20, 10],
+  sign: [100, 75],
 };
 
 const BASE_SIZE = 3;
@@ -770,6 +781,7 @@ class SimState {
           target_x, target_y
         ]);
         target_drone.gain_resource_tick = this.tick_id;
+        break;
       }
     }
 
@@ -824,8 +836,13 @@ class SimState {
       return;
     }
 
+    let cur_zone = this.parent.playerIdxFromPos(drone.x, drone.y);
     let x = drone.x + DX[drone.rot];
     let y = drone.y + DY[drone.rot];
+    let new_zone = this.parent.playerIdxFromPos(x, y);
+    if (cur_zone !== new_zone) {
+      return;
+    }
     if (x < 0 || y < 0 || x >= this.parent.w || y >= this.parent.h) {
       // out of bounds
       return;
@@ -840,8 +857,13 @@ class SimState {
   }
 
   tryMove(drone: Drone, signals: { x: number; y: number }[]): boolean {
+    let cur_zone = this.parent.playerIdxFromPos(drone.x, drone.y);
     let x = drone.x + DX[drone.rot];
     let y = drone.y + DY[drone.rot];
+    let new_zone = this.parent.playerIdxFromPos(x, y);
+    if (cur_zone !== new_zone) {
+      return false;
+    }
     if (x < 0 || y < 0 || x >= this.parent.w || y >= this.parent.h || drone.stopped) {
       return false;
     }
@@ -983,6 +1005,7 @@ class GameState {
   players: PlayerData[];
   my_player_idx: number;
   tutorial_state: number;
+  last_saved_my_payout = 0;
 
   // [x0, y0, x1(inclusive), y1(inclusive)]
   player_zones!: JSVec4[];
@@ -1156,6 +1179,7 @@ class GameState {
       delta = 1;
     }
     if (delta > 0) {
+      delta = min(delta, MAX_PAYOUT_DAYS);
       let dm = this.calcValue();
       if (dm) {
         me.max_revenue = max(dm, me.max_revenue);
@@ -1167,6 +1191,10 @@ class GameState {
           `Day end${delta > 1 ? ` (x${delta})` : ''}: +$${dm}`);
       }
       me.payout_index = expected_idx;
+      if (expected_idx - this.last_saved_my_payout > 10) {
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        sendDiff();
+      }
     }
   }
 
@@ -1205,10 +1233,11 @@ class GameState {
 
   countOf(tile_type: CellType): number {
     let r = 0;
-    let { w, h, map } = this;
-    for (let jj = 0; jj < h; ++jj) {
+    let { map } = this;
+    let my_zone = this.player_zones[this.my_player_idx];
+    for (let jj = my_zone[1]; jj <= my_zone[3]; ++jj) {
       let row = map[jj];
-      for (let ii = 0; ii < w; ++ii) {
+      for (let ii = my_zone[0]; ii <= my_zone[2]; ++ii) {
         let cell = row[ii];
         if (cell && cell.type === tile_type && !cell.nodraw) {
           ++r;
@@ -1358,6 +1387,7 @@ class GameState {
       }
     } else {
       this.resetDay();
+      this.last_saved_my_payout = this.me().payout_index;
     }
   }
 }
@@ -1373,28 +1403,32 @@ type Tool = {
 const TOOLS: Tool[] = [{
   icon: 'drone-right',
   type: 'spawner',
-  tooltip: 'Spawns a drone at the start of every day.',
+  tooltip: 'Drone Spwaner\n\nSpawns a drone at the start of every day.',
 }, {
   icon: 'rotate-clockwise',
   type: 'rotate',
-  tooltip: 'Signals a drone to rotate when it passes over.',
+  tooltip: 'Turn Signal\n\nSignals a drone to rotate when it passes over.',
 }, {
   icon: 'crafter0',
   type: 'craft',
-  tooltip: 'Processes resources into other resources.\n\nNote that all input' +
+  tooltip: 'Crafter\n\nProcesses resources into other resources.\n\nNote that all input' +
     ' resources must be deposited at exactly the same time.',
 }, {
   icon: 'storage',
   type: 'storage',
-  tooltip: 'Allows drones to deposit and pick up resources.',
+  tooltip: 'Storage\n\nAllows drones to deposit and pick up a resource.',
 }, {
   icon: 'signal-stop',
   type: 'signal-stop',
-  tooltip: 'Signals a drone to stop until a nearby GO signal is activated.',
+  tooltip: 'Stop Signal\n\nSignals a drone to stop until a nearby GO signal is activated.',
 }, {
   icon: 'signal-go',
   type: 'signal-go',
-  tooltip: `Signals all stopped drones within ${SIGNAL_DIST} spaces in each direction to go.`,
+  tooltip: `Go Signal\n\nSignals all stopped drones within ${SIGNAL_DIST} spaces in each direction to go.`,
+}, {
+  icon: 'sign',
+  type: 'sign',
+  tooltip: 'Sign(al)\n\nAllows leaving messages for yourself or your neighbors.',
 }, {
   icon: 'icon-sell',
   type: null,
@@ -1415,12 +1449,8 @@ TOOLS.forEach(function (tool, idx) {
 function cellFrame(type: CellType, rot: number): string {
   if (type === 'resource') {
     return 'spawn-wood';
-  } else if (type === 'base') {
-    return 'base';
   } else if (type === 'craft') {
     return `crafter${rot}`;
-  } else if (type === 'storage') {
-    return 'storage';
   } else if (type === 'spawner') {
     return `spawner-${ROT_TO_DIR[rot]}`;
   } else if (type === 'rotate') {
@@ -1551,6 +1581,9 @@ function drawFloaters(floaters: Floater[], dt: number, z: number, size?: number)
 }
 
 function buildMode(): void {
+  if (isMenuUp()) {
+    return;
+  }
   let mouse_pos = mousePos();
   let x = floor(mouse_pos[0] / TILE_SIZE);
   let y = floor(mouse_pos[1] / TILE_SIZE);
@@ -1622,11 +1655,61 @@ function buildMode(): void {
     }
   }
 
+  if (hover_cell) {
+    let in_my_zone = inZone(game_state.player_zones[game_state.my_player_idx], hover_cell_x, hover_cell_y);
+    if (hover_cell.type === 'sign') {
+      let text = hover_cell.text || 'Click me!';
+      if (!in_my_zone) {
+        text = profanityFilter(text);
+      }
+      let h = markdownAuto({
+        font_style: style_floater,
+        alpha: 0,
+        x: (hover_cell_x + 0.5) * TILE_SIZE - TILE_SIZE * 5,
+        y: hover_cell_y * TILE_SIZE,
+        z: Z.MAP + 5,
+        w: TILE_SIZE * 10,
+        align: ALIGN.HCENTER | ALIGN.HWRAP,
+        text,
+      }).h;
+      markdownAuto({
+        font_style: style_floater,
+        x: (hover_cell_x + 0.5) * TILE_SIZE - TILE_SIZE * 5,
+        y: hover_cell_y * TILE_SIZE - h,
+        z: Z.MAP + 5,
+        w: TILE_SIZE * 10,
+        align: ALIGN.HCENTER | ALIGN.HWRAP,
+        text,
+      });
+    } else {
+      let tooltip = '';
+      if (hover_cell.type === 'resource') {
+        tooltip = `Resource (${hover_cell.resource})\nRaw value: $${resourceValue(hover_cell.resource!)}`;
+      } else if (hover_cell.type === 'base') {
+        if (in_my_zone) {
+          tooltip = 'Your home base.  Deliver resources here to gain money at the end of the day.';
+        } else {
+          tooltip = 'Someone else\'s home base.  Bring resources they need to the border to help out!';
+        }
+      }
+
+      if (tooltip) {
+        drawTooltip({
+          x: hover_cell_x * TILE_SIZE,
+          y: hover_cell_y * TILE_SIZE,
+          tooltip_center: true,
+          tooltip_above: true,
+          tooltip,
+        });
+      }
+    }
+  }
+
   if (is_selling) {
     can_place = Boolean(hover_cell && COST_TABLE[hover_cell.type]);
   }
 
-  if (tool && tool.type || tool && is_selling || can_rotate && hover_cell) {
+  if (tool && tool.type || tool && is_selling || hover_cell) {
     let color: JSVec4 | Vec4 = (can_place || can_rotate) ? [1, 1, 1, 0.5] : [1, 0, 0, 0.5];
     let eff_rot = selected_rot;
     let eff_x = x;
@@ -1652,8 +1735,8 @@ function buildMode(): void {
         h: TILE_SIZE * eff_w,
         color,
       });
-    } else {
-      autoAtlas('main', cellFrame(eff_type!, eff_rot)).draw({
+    } else if (eff_type) {
+      autoAtlas('main', cellFrame(eff_type, eff_rot)).draw({
         x: eff_x * TILE_SIZE,
         y: eff_y * TILE_SIZE,
         z: Z.MAP + 2,
@@ -1698,6 +1781,22 @@ function buildMode(): void {
         } else if (can_place) {
           assert(tool);
           game_state.buyTile(x, y, tool.type, selected_rot);
+        } else if (hover_cell?.type === 'sign') {
+          modalTextEntry({
+            title: 'Signage',
+            edit_text: hover_cell.text || '',
+            max_len: 64,
+            buttons: {
+              OK: function (new_text) {
+                if (new_text !== hover_cell.text) {
+                  hover_cell.text = new_text;
+                  // eslint-disable-next-line @typescript-eslint/no-use-before-define
+                  sendDiff();
+                }
+              },
+              Cancel: null,
+            }
+          });
         } else {
           game_state.float('error', x, y, 'Placement blocked');
         }
@@ -1711,7 +1810,7 @@ tutorial_states = [
   null!,
   {
     msg:
-      'Welcome to Drone Supervisor II!\n\n' +
+      'Welcome to **Drone Supervisor II**!\n\n' +
       'You earn money by having Drones ' +
       'deliver resources to your home base. ' +
       'To get started, select the ' +
@@ -2420,6 +2519,7 @@ function sendDiff(): void {
   me.revenue = game_state.calcValue();
   let diff = differ.update(game_state.serialize());
   if (diff.length) {
+    game_state.last_saved_my_payout = me.payout_index;
     let pak = game_room.pak('edit_op');
     pak.writeJSON(diff);
     pak.send(function (err: string | null) {
@@ -2527,6 +2627,7 @@ export function main(): void {
     fontStyleColored(null, palette_font[PAL_BLACK]),
     fontStyleColored(null, palette_font[PAL_BLACK]),
   );
+  uiSetPanelColor(unit_vec);
 
   gl.clearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
   v4copy(engine.border_clear_color, clear_color);
@@ -2536,4 +2637,16 @@ export function main(): void {
 
   // playInit();
   titleInit();
+
+  profanityStartup();
+
+  // markdownSetColorStyle('floater', style_floater);
+  // markdownSetColorStyle('floater.bold', fontStyle(style_floater, {
+  //   outline_width: 8,
+  // }));
+  markdownSetColorStyle('def.bold', fontStyle(null, {
+    color: palette_font[PAL_BLACK],
+    outline_color: palette_font[PAL_WHITE],
+    outline_width: 2.5,
+  }));
 }
