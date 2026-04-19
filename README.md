@@ -29,6 +29,7 @@ Additional recipes and resources (unique colored gems)
 
 Show recipes somewhere (just open a recipe book overlay?  tooltip on each resource?)
 
+Issue with a 2/4P game that you left showing up at top of list
 Show finished state of games on room list - encourage user to resume a game that has been won but they haven't seen the victory for it yet (and save a high score when they do)
 
 Maybe

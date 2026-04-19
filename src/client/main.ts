@@ -33,6 +33,7 @@ import {
   ButtonRet,
   drawCircle,
   drawRect2,
+  panel,
   playUISound,
   scaleSizes,
   setButtonHeight,
@@ -43,6 +44,7 @@ import {
 import * as walltime from 'glov/client/walltime';
 import { Differ, differCreate } from 'glov/common/differ';
 import { randCreate } from 'glov/common/rand_alea';
+import { TSMap } from 'glov/common/types';
 import {
   clamp,
   clone,
@@ -70,7 +72,7 @@ import {
 } from './palette';
 import { titleInit, titleReturn } from './title';
 
-const { abs, floor, max, min } = Math;
+const { abs, floor, max, min, sin } = Math;
 
 window.Z = window.Z || {};
 Z.BACKGROUND = 1;
@@ -79,6 +81,7 @@ Z.MAP = 10;
 Z.FLOATERS = 20;
 Z.UI = 200;
 Z.UIFLOATERS = 300;
+Z.TUT = 400;
 
 
 const TICK_TIME = 1000;
@@ -104,6 +107,8 @@ const style_base_money = fontStyle(null, {
   outline_width: 4,
   outline_color: palette_font[PAL_BLACK],
 });
+
+const style_text = fontStyleColored(null, palette_font[PAL_BLACK]);
 
 const style_day_end = style_base_money;
 
@@ -132,6 +137,7 @@ type LevelDef = {
   h: number;
   starting_power: number;
   starting_money: number;
+  goal: number;
   resources: Record<BaseResourceType, number>;
   seed: number;
 };
@@ -143,11 +149,12 @@ const level_defs: LevelDef[] = [{
   h: 9,
   starting_power: 7,
   starting_money: 600,
-  seed: 1234,
+  seed: 7,
+  goal: 245,
   resources: {
-    wood: 3,
-    stone: 3,
-    fruit: 3,
+    wood: 0,
+    stone: 0,
+    fruit: 0,
   },
 }, {
   name: 'Small (Solo)',
@@ -157,6 +164,7 @@ const level_defs: LevelDef[] = [{
   starting_power: 7,
   starting_money: 600,
   seed: 2345,
+  goal: 1000,
   resources: {
     wood: 3,
     stone: 3,
@@ -170,6 +178,7 @@ const level_defs: LevelDef[] = [{
   starting_power: 7,
   starting_money: 600,
   seed: 1234,
+  goal: 2000,
   resources: {
     wood: 3,
     stone: 3,
@@ -183,6 +192,7 @@ const level_defs: LevelDef[] = [{
   starting_power: 7,
   starting_money: 600,
   seed: 1234,
+  goal: 4000,
   resources: {
     wood: 3,
     stone: 3,
@@ -196,6 +206,7 @@ const level_defs: LevelDef[] = [{
   starting_power: 5,
   starting_money: 5000,
   seed: 1234,
+  goal: 100000,
   resources: {
     wood: 3,
     stone: 3,
@@ -255,6 +266,7 @@ type PlayerData = {
   user_id: string;
   money: number;
   revenue: number;
+  max_revenue: number;
   payout_index: number;
 };
 
@@ -263,6 +275,7 @@ export type GameStateSerialized = {
   ld_idx: number;
   game_start_time: number;
   players: PlayerData[];
+  tut: number;
 };
 
 
@@ -504,6 +517,17 @@ class SimState {
     }
   }
 
+  removeTransfers(x: number, y: number): void {
+    let { transfers } = this;
+    for (let ii = transfers.length - 1; ii >= 0; --ii) {
+      let entry = transfers[ii];
+      // only to our location, things going from our location are already owned by something else and would return
+      if (entry[4] === x && entry[5] === y) {
+        transfers.splice(ii, 1);
+      }
+    }
+  }
+
   updateMapEdit(x: number, y: number): void {
     let { tickables, drones, sim_map } = this;
     for (let ii = 0; ii < tickables.length; ++ii) {
@@ -520,8 +544,10 @@ class SimState {
         drones.splice(ii, 1);
         assert.equal(this.drone_map[drone.y][drone.x], drone);
         this.drone_map[drone.y][drone.x] = undefined;
+        this.removeTransfers(drone.x, drone.y);
       }
     }
+    this.removeTransfers(x, y);
 
     let cell = this.parent.map[y][x];
     if (!cell || cell.nodraw) {
@@ -923,6 +949,17 @@ function uiFloat(style: FloatStyle, x: number, y: number, str: string): void {
   });
 }
 
+let indicator_pos: TSMap<{ x: number; y: number }> = {};
+
+type TutState = {
+  msg: string;
+  indicator_name?: string;
+  indicator?: { x: number; y: number };
+  done: () => boolean | number | string | undefined | null;
+  buy_validate?: (x: number, y: number, tile_type: CellType | null, dir: number) => boolean;
+};
+let tutorial_states: TutState[];
+
 class GameState {
   w: number;
   h: number;
@@ -933,6 +970,7 @@ class GameState {
   game_start_time: number;
   players: PlayerData[];
   my_player_idx: number;
+  tutorial_state: number;
   constructor(ld_idx: number, player_idx: number) {
     let ld = level_defs[ld_idx];
     this.my_player_idx = player_idx;
@@ -947,6 +985,7 @@ class GameState {
         user_id: '',
         money: ld.starting_money,
         revenue: 0,
+        max_revenue: 0,
         payout_index: 0,
       });
     }
@@ -987,6 +1026,19 @@ class GameState {
         }
       }
     });
+
+    this.tutorial_state = 0;
+    if (ld.name === 'Tutorial') {
+      this.tutorial_state = 1;
+      this.map[3][1] = {
+        type: 'resource',
+        resource: 'fruit',
+      };
+      this.map[1][6] = {
+        type: 'resource',
+        resource: 'stone',
+      };
+    }
 
     if (engine.DEBUG && false) {
       this.map[9][4] = {
@@ -1046,20 +1098,30 @@ class GameState {
   resetDay(): void {
     this.sim_state = new SimState(this, this.float.bind(this));
   }
-  awardMoney(): void {
+  skipRevenue(): void {
     let expected_idx = floor((walltime.now() - this.game_start_time) / PAYOUT_TIME);
-    let delta = expected_idx - this.me().payout_index;
+    this.me().payout_index = expected_idx;
+  }
+  awardMoney(): void {
+    let me = this.me();
+    let expected_idx = floor((walltime.now() - this.game_start_time) / PAYOUT_TIME);
+    let delta = expected_idx - me.payout_index;
+    if (!me.max_revenue) {
+      // never got money before
+      delta = 1;
+    }
     if (delta > 0) {
       let dm = this.calcValue();
       if (dm) {
+        me.max_revenue = max(dm, me.max_revenue);
         dm *= delta;
-        this.me().money += dm;
+        me.money += dm;
         uiFloat('day_end',
           camera2d.x0() + camera2d.w() * 0.5,
           camera2d.y0() + FONT_HEIGHT * 2,
           `Day end${delta > 1 ? ` (x${delta})` : ''}: +$${dm}`);
       }
-      this.me().payout_index = expected_idx;
+      me.payout_index = expected_idx;
     }
   }
 
@@ -1122,14 +1184,14 @@ class GameState {
   }
 
   buyTile(x: number, y: number, tile_type: CellType | null, rot: number): void {
-    // if (this.tutorial_state && tutorial_states[this.tutorial_state] && (
-    //   !tutorial_states[this.tutorial_state].buy_validate ||
-    //   !tutorial_states[this.tutorial_state].buy_validate(x, y, tile_type, rot)
-    // )) {
-    //   sound_manager.play('drone/place_error');
-    //   floatText(x, y, 2000, 'Invalid (please follow directions)', font_style_buy);
-    //   return;
-    // }
+    if (this.tutorial_state && tutorial_states[this.tutorial_state] && (
+      !tutorial_states[this.tutorial_state].buy_validate ||
+      !tutorial_states[this.tutorial_state].buy_validate!(x, y, tile_type, rot)
+    )) {
+      // playUISound('place_error');
+      this.float('error', x, y, 'Invalid (please follow directions)');
+      return;
+    }
     let tile = this.map[y][x];
     let dmoney = 0;
     let diff = false;
@@ -1202,6 +1264,7 @@ class GameState {
       }
     }
     return {
+      tut: this.tutorial_state,
       map: mapout,
       ld_idx: this.ld_idx,
       game_start_time: this.game_start_time,
@@ -1215,6 +1278,7 @@ class GameState {
     assert.equal(ser.map[0].length, w);
     assert.equal(ser.ld_idx, this.ld_idx);
     this.game_start_time = ser.game_start_time;
+    this.tutorial_state = ser.tut;
     for (let jj = 0; jj < h; ++jj) {
       for (let ii = 0; ii < w; ++ii) {
         let elem = ser.map[jj][ii];
@@ -1309,8 +1373,14 @@ function drawHUD(eff_is_ff: boolean): void {
       x: 0, w: game_width,
       y: y + 2,
       align: ALIGN.HCENTER | ALIGN.HWRAP,
-      text: `Revenue: $${game_state.calcValue()}/day  ` +
-        `Step: ${min(max_power, max_power - game_state.sim_state.power)} / ${max_power}`,
+      text: `Revenue: $${game_state.calcValue()}/day of $${level_defs[game_state.ld_idx].goal}/day Goal`,
+    });
+    font.draw({
+      style: style_floater,
+      x: 0, w: game_width,
+      y: game_height - FONT_HEIGHT - 2,
+      align: ALIGN.HCENTER | ALIGN.HWRAP,
+      text: `Step: ${min(max_power, max_power - game_state.sim_state.power)} / ${max_power}`,
     });
   }
 
@@ -1330,6 +1400,8 @@ function drawHUD(eff_is_ff: boolean): void {
       icon = cellFrame(tool.type, selected_rot);
       icon = icon.replace('spawner', 'drone');
     }
+    indicator_pos[`buy_${tool.type}`] = { x: x + BUTTON_HEIGHT / 2, y: y + BUTTON_HEIGHT - 4 };
+
     if (button({
       x, y, z, h: BUTTON_HEIGHT,
       w,
@@ -1559,6 +1631,319 @@ function buildMode(): void {
   }
 }
 
+tutorial_states = [
+  null!,
+  {
+    msg:
+      'Welcome to Drone Supervisor II!\n' +
+      'You earn money by having Drones ' +
+      'deliver resources to your home base. ' +
+      'To get started, select the ' +
+      'Build Drone tool.',
+    indicator_name: 'buy_spawner',
+    indicator: { x: 100, y: 100 },
+    done: function () {
+      return selected_tool === 0;
+    },
+  },
+  {
+    msg: 'Now, place a Drone in the indicated square.',
+    indicator: { x: 0, y: 2 },
+    buy_validate: function (x, y, tile_type, dir) {
+      return x === 0 && y === 2 && tile_type === 'spawner';
+    },
+    done: function () {
+      return game_state.map[2][0] && game_state.map[2][0].type === 'spawner';
+    },
+  },
+  {
+    msg:
+      'Good job!\n' +
+      'Now, we want this Drone to ' +
+      'travel to the right.\n' +
+      'Click on the newly placed Drone ' +
+      'until he faces to the right, ' +
+      'towards your Base in the center ' +
+      'of the level.',
+    indicator: { x: 0, y: 2 },
+    buy_validate: function (x, y, tile_type, dir) {
+      return x === 0 && y === 2 && tile_type === 'spawner';
+    },
+    done: function () {
+      return game_state.map[2][0] && game_state.map[2][0].rot === 1;
+    },
+  },
+  // {
+  //   msg: 'Perfect. Let\'s see how he\'ll do.  Click Preview.',
+  //   indicator_name: 'preview',
+  //   done: function () {
+  //     return play_state === 'preview';
+  //   },
+  // },
+  // {
+  //   msg: null,
+  //   done: function () {
+  //     return game_state.power < 0;
+  //   },
+  // },
+  // {
+  //   msg: 'Great! He picked up and sold one Gold, worth $100.\n' +
+  //     'If you want to see that again, choose Cancel, and click Preview again.\n' +
+  //     'To continue, click Next Turn, cashing in your earnings.',
+  //   indicator_name: 'next_turn',
+  //   done: function () {
+  //     return play_state === 'build' && game_state.turn === 1;
+  //   },
+  // },
+  // {
+  //   msg:
+  //     'Now it\'s another turn and we have more money to spend.\n\n' +
+  //     'Let\'s harvest the Silver, this will require changing the direction of Drones with Arrows.\n\n' +
+  //     'Select the Arrow tool.',
+  //   indicator_name: 'buy_arrow',
+  //   done: function () {
+  //     return current_tile === 'arrow';
+  //   },
+  // },
+  // {
+  //   msg: 'Now, place a Down Arrow in the indicated square.',
+  //   indicator: { x: 3, y: 6 },
+  //   buy_validate: function (x, y, tile_type, dir) {
+  //     return x === 3 && y === 6 && tile_type === 'arrow';
+  //   },
+  //   done: function () {
+  //     return game_state.map[3][6] && game_state.map[3][6].type === 'arrow' &&
+  //       game_state.map[3][6].direction === 2;
+  //   },
+  // },
+  // {
+  //   msg: 'And an Up Arrow in this indicated square.',
+  //   indicator: { x: 3, y: 7 },
+  //   buy_validate: function (x, y, tile_type, dir) {
+  //     return x === 3 && y === 7 && tile_type === 'arrow';
+  //   },
+  //   done: function () {
+  //     return game_state.map[3][7] && game_state.map[3][7].type === 'arrow' &&
+  //       game_state.map[3][7].direction === 0;
+  //   },
+  // },
+  // {
+  //   msg: 'Great!\n\nNow, a Drone facing left here.',
+  //   indicator: { x: 4, y: 6 },
+  //   buy_validate: function (x, y, tile_type, dir) {
+  //     return x === 4 && y === 6 && tile_type === 'drone';
+  //   },
+  //   done: function () {
+  //     return game_state.map[4][6] && game_state.map[4][6].type === 'drone' &&
+  //       game_state.map[4][6].direction === 3;
+  //   },
+  // },
+  // {
+  //   msg: 'One last thing, let\'s move our first drone somewhere better.\n\n' +
+  //     'Pick it up by right clicking, shift-clicking, or using the Sell tool.',
+  //   indicator: { x: 0, y: 3 },
+  //   buy_validate: function (x, y, tile_type, dir) {
+  //     return x === 0 && y === 3 && !tile_type;
+  //   },
+  //   done: function () {
+  //     return !game_state.map[0][3];
+  //   },
+  // },
+  // {
+  //   msg: 'Put it back down, facing right, right here.',
+  //   indicator: { x: 2, y: 4 },
+  //   buy_validate: function (x, y, tile_type, dir) {
+  //     return x === 2 && y === 4 && tile_type === 'drone';
+  //   },
+  //   done: function () {
+  //     return game_state.map[2][4] && game_state.map[2][4].type === 'drone' &&
+  //       game_state.map[2][4].direction === 1;
+  //   },
+  // },
+  // {
+  //   msg: 'Perfect. Let\'s get some more money.  Click Preview.',
+  //   indicator_name: 'preview',
+  //   done: function () {
+  //     return play_state === 'preview';
+  //   },
+  // },
+  // {
+  //   msg: null,
+  //   done: function () {
+  //     return game_state.power < 0;
+  //   },
+  // },
+  // {
+  //   msg: 'See how the left Drone stayed in one place and sold all of the Gold?\n' +
+  //     'Notice the right Drone following the arrows we placed.\n\n' +
+  //     'To continue, click Next Turn, cashing in your earnings.',
+  //   indicator_name: 'next_turn',
+  //   done: function () {
+  //     return play_state === 'build' && game_state.turn === 2;
+  //   },
+  // },
+  // {
+  //   msg: 'At the top, it says our goal is to Craft and Sell 1 jewelry.' +
+  //     '  We do not have enough money to build a crafting station yet, so' +
+  //     ' run one more turn with this same configuration.',
+  //   indicator_name: 'preview',
+  //   done: function () {
+  //     return play_state === 'preview';
+  //   },
+  // },
+  // {
+  //   msg: null,
+  //   done: function () {
+  //     return game_state.power < 0;
+  //   },
+  // },
+  // {
+  //   msg: 'Great, that should be enough money!',
+  //   indicator_name: 'next_turn',
+  //   done: function () {
+  //     let ret = play_state === 'build' && game_state.turn === 3;
+  //     if (ret) {
+  //       game_state.money = 1400;
+  //     }
+  //     return ret;
+  //   },
+  // },
+  // {
+  //   msg: 'Now, remove both drones and both arrows to reclaim our money.',
+  //   indicator_name: 'buy_sell',
+  //   buy_validate: function (x, y, tile_type, dir) {
+  //     return !tile_type;
+  //   },
+  //   done: function () {
+  //     return game_state.countOf('drone') + game_state.countOf('arrow') === 0;
+  //   },
+  // },
+  // {
+  //   msg: 'Select the 2-Node Crafting Station.',
+  //   indicator_name: 'buy_craft2',
+  //   done: function () {
+  //     return current_tile === 'craft2';
+  //   },
+  // },
+  // {
+  //   msg: 'And place it here, with the Output node (red) in the upper right.',
+  //   indicator: { x: 1, y: 6 },
+  //   buy_validate: function (x, y, tile_type, dir) {
+  //     return x === 1 && y === 6 && tile_type === 'craft2';
+  //   },
+  //   done: function () {
+  //     return game_state.map[1][6] && game_state.map[1][6].type === 'craft2' &&
+  //       game_state.map[1][6].direction === 0;
+  //   },
+  // },
+  // {
+  //   msg: `Finally, place 3 Drones and 2 Arrows in the configuration shown here:${
+  //     new Array(12).join('\n')}`,
+  //   buy_validate: function (x, y, tile_type, dir) {
+  //     return x >=0 && x <=3 && y >= 5 && y <= 8;
+  //   },
+  //   done: function () {
+  //     draw_list.queue(sprites.tutorial1,
+  //       camera2d.x1() - 380,
+  //       camera2d.y1() - 350,
+  //       Z.TUT + 3, color_white);
+  //     let test = [
+  //       [0,8,'drone',1],
+  //       [1,5,'drone',2],
+  //       [3,6,'drone',0],
+  //       [1,6,'craft2',0],
+  //       [1,8,'arrow',1],
+  //       [2,8,'arrow',3],
+  //     ];
+  //     for (let ii = 0; ii < test.length; ++ii) {
+  //       let t = test[ii];
+  //       if (game_state.map[t[0]][t[1]] && game_state.map[t[0]][t[1]].type === t[2] &&
+  //         game_state.map[t[0]][t[1]].direction === t[3]
+  //       ) {
+  //         // good
+  //       } else {
+  //         return false;
+  //       }
+  //     }
+  //     return true;
+  //   },
+  // },
+  // {
+  //   msg: 'You\'ve done it!\n' +
+  //     'Play out the turn to complete the tutorial.',
+  //   indicator_name: 'preview',
+  //   done: function () {
+  //     return play_state === 'preview';
+  //   },
+  // },
+];
+
+let tut_indicator: (() => void) | null = null;
+function drawTutorial(): void {
+  tut_indicator = null;
+  let tut_state = tutorial_states[game_state.tutorial_state];
+  if (tut_state) {
+    let tut_msg = tut_state.msg;
+    if (tut_msg) {
+      let font_size = FONT_HEIGHT;
+      let tut_w = 300;
+      let tut_pad = 8;
+      let text_w = tut_w - tut_pad * 2;
+      let tut_indent = 0;
+      let lines = font.numLines(style_text, text_w, tut_indent, font_size, tut_msg);
+      let tut_h = lines * font_size + font_size * 1.5 + tut_pad*2;
+      let tut_x = camera2d.x1() - tut_w;
+      let tut_y0 = camera2d.y1() - FONT_HEIGHT - tut_h;
+      let tut_y = tut_y0 + tut_pad;
+      font.drawSized(style_text, tut_x + tut_pad, tut_y, Z.TUT, font_size * 1.5,
+        'Tutorial');
+      tut_y += font_size * 1.5;
+      tut_y += font.drawSizedWrapped(style_text, tut_x + tut_pad, tut_y, Z.TUT, text_w, tut_indent, font_size, tut_msg);
+      panel({
+        x: tut_x,
+        y: tut_y0,
+        z: Z.TUT - 1,
+        w: tut_w,
+        h: tut_h,
+      });
+    }
+    if (tut_state.indicator_name) {
+      // must be a UI indicator, draw now
+      let indicator = indicator_pos[tut_state.indicator_name];
+      if (indicator) {
+        autoAtlas('main', 'icon-arrow').draw({
+          x: indicator.x - TILE_SIZE/2,
+          y: indicator.y - TILE_SIZE - TILE_SIZE * abs(sin(engine.getFrameTimestamp() * 0.005)),
+          w: TILE_SIZE,
+          h: TILE_SIZE,
+          z: 10000,
+          color: [1,1,1,0.75]
+        });
+      }
+    }
+    if (tut_state.indicator) {
+      let indicator = {
+        x: tut_state.indicator.x * TILE_SIZE + TILE_SIZE / 2,
+        y: tut_state.indicator.y * TILE_SIZE + TILE_SIZE / 2,
+      };
+      // In-word indicator, draw after camera change.
+      tut_indicator = () => {
+        autoAtlas('main', 'icon-arrow').draw({
+          x: indicator.x - TILE_SIZE/2,
+          y: indicator.y - TILE_SIZE - TILE_SIZE * abs(sin(engine.getFrameTimestamp() * 0.005)),
+          w: TILE_SIZE,
+          h: TILE_SIZE,
+          z: 10000,
+          color: [1,1,1,0.75],
+        });
+      };
+    }
+    if (tut_state.done && tut_state.done()) {
+      game_state.tutorial_state++;
+    }
+  }
+}
+
 let counter = 0;
 function statePlay(dt: number): void {
   let dt_orig = dt;
@@ -1567,7 +1952,13 @@ function statePlay(dt: number): void {
     dt *= 5;
   }
   counter += dt;
-  if (counter >= TICK_TIME) {
+  if (!game_state.sim_state.drones.length && !game_state.me().max_revenue) {
+    counter = TICK_TIME - 1;
+    if (game_state.sim_state.tick_id) {
+      game_state.resetDay();
+    }
+    game_state.skipRevenue();
+  } else if (counter >= TICK_TIME) {
     counter -= TICK_TIME;
     counter = min(counter, TICK_TIME - 1);
     game_state.sim_state.tick();
@@ -1581,6 +1972,7 @@ function statePlay(dt: number): void {
   let t = counter / TICK_TIME;
 
   drawHUD(eff_is_ff);
+  drawTutorial();
 
   let fade = game_state.sim_state.tick_id === 0 ?
     1 - counter / TICK_TIME * 2 :
@@ -1606,7 +1998,7 @@ function statePlay(dt: number): void {
   }
 
   let drag_ret = drag(full_rect);
-  if (drag_ret) {
+  if (drag_ret && !game_state.tutorial_state) {
     view_center[0] -= drag_ret.delta[0] / TILE_SIZE;
     view_center[1] -= drag_ret.delta[1] / TILE_SIZE;
   }
@@ -1618,6 +2010,8 @@ function statePlay(dt: number): void {
   let { drones, transfers, sim_map } = sim_state;
   let z = Z.MAP;
   let bg = autoAtlas('main', 'bg');
+
+  tut_indicator?.();
 
   function isTransferTo(x: number, y: number): 'from' | 'within' | null {
     for (let ii = 0; ii < transfers.length; ++ii) {
@@ -1877,7 +2271,8 @@ function statePlay(dt: number): void {
 let differ: Differ;
 let game_room: ClientChannelWorker;
 function sendDiff(): void {
-  game_state.me().revenue = game_state.calcValue();
+  let me = game_state.me();
+  me.revenue = game_state.calcValue();
   let diff = differ.update(game_state.serialize());
   if (diff.length) {
     let pak = game_room.pak('edit_op');
@@ -1905,8 +2300,9 @@ export function playInit(level_idx: number, player_idx: number, channel: ClientC
   game_room = channel;
   engine.setState(statePlay);
   counter = 0;
-  selected_tool = engine.DEBUG ? 0 : -1;
+  selected_tool = -1;
   selected_rot = 0;
+  ui_floaters.length = 0;
   is_ff = false;
   game_state = new GameState(level_idx, player_idx);
   game_state.deserialize(channel.getChannelData<GameStateSerialized>('public.gs', null!));

@@ -433,7 +433,7 @@ function stateTitle(dt: number): void {
     let entry = room_list[ii];
     let ld = level_defs[entry.level_idx];
     let y_save = y;
-    drawRect(x-1, y-1, x + button_w+1, y + button_h+1, Z.UI - 1, palette[PAL_BLACK]);
+    drawRect(x-1, y-1, x + button_w+1, y + button_h+1, z - 0.1, palette[PAL_BLACK]);
     let has_me = entry.players.includes(netUserId()!);
 
     if (buttonText({
