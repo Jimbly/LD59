@@ -17,7 +17,6 @@ TODO
 
 Additional recipes and resources
 
-offline time pay out logarithmically
 floaters look bad when two drones sell 2 things on the same frame, add an offset
 Show finished state of games on room list - encourage user to resume a game that has been won but they haven't seen the victory for it yet (and save a high score when they do)
   Also some progress - encourage joining games with players actively playing

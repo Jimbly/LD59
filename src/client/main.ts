@@ -86,7 +86,7 @@ import {
 } from './palette';
 import { getDisplayName, titleInit, titleReturn } from './title';
 
-const { abs, floor, random, max, min, sin, pow, round } = Math;
+const { abs, floor, random, max, min, sin, pow, sqrt, round } = Math;
 
 window.Z = window.Z || {};
 Z.BACKGROUND = 1;
@@ -99,7 +99,6 @@ Z.TUT = 400;
 
 
 const TICK_TIME = 1000;
-const PAYOUT_TIME = TICK_TIME * 6;
 const MAX_PAYOUT_DAYS = 99;
 
 let font: Font;
@@ -1173,12 +1172,16 @@ class GameState {
     view_center = [(my_zone[0] + my_zone[2]) / 2, (my_zone[1] + my_zone[3]) / 2];
   }
 
+  payoutTime(): number {
+    return (this.ld.starting_power + 2) * TICK_TIME;
+  }
+
   constructor(ld_idx: number, player_idx: number) {
     let ld = level_defs[ld_idx];
     this.my_player_idx = player_idx;
     this.ld_idx = ld_idx;
     this.ld = ld;
-    this.game_start_time = walltime.now() - PAYOUT_TIME / 2;
+    this.game_start_time = walltime.now() - this.payoutTime() / 2;
     let players = [];
     for (let ii = 0; ii < ld.players; ++ii) {
       players.push({
@@ -1324,18 +1327,21 @@ class GameState {
     this.sim_state = new SimState(this, this.float.bind(this));
   }
   skipRevenue(): void {
-    let expected_idx = floor((walltime.now() - this.game_start_time) / PAYOUT_TIME);
+    let expected_idx = floor((walltime.now() - this.game_start_time) / this.payoutTime());
     this.me().payout_index = expected_idx;
   }
   awardMoney(): void {
     let me = this.me();
-    let expected_idx = floor((walltime.now() - this.game_start_time) / PAYOUT_TIME);
+    let expected_idx = floor((walltime.now() - this.game_start_time) / this.payoutTime());
     let delta = expected_idx - me.payout_index;
     if (!me.max_revenue) {
       // never got money before
       delta = 1;
     }
     if (delta > 0) {
+      if (delta > 3) {
+        delta = 3 + round(sqrt(delta - 3));
+      }
       delta = min(delta, MAX_PAYOUT_DAYS);
       let dm = this.calcValue();
       if (dm) {
@@ -1386,7 +1392,7 @@ class GameState {
   score(): Score {
     let revenue = min(this.totalRevenue(), this.ld.goal);
     let networth = this.calcNetWorth(true);
-    let days = floor((walltime.now() - this.game_start_time) / PAYOUT_TIME);
+    let days = floor((walltime.now() - this.game_start_time) / this.payoutTime());
     return {
       revenue,
       networth,
@@ -2446,6 +2452,8 @@ function drawHelp(): void {
     text: `GENERAL INFO
 
 Sale prices decrease by 50% for each identical item sold.
+
+Offline revenue-days accumulate with diminishing returns up to 99 days after about 32 hours.
 `,
   });
 
