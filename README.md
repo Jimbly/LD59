@@ -15,7 +15,7 @@ Start with: `npm start` (after running `npm i` once)
 TODO
 ====
 
-Additional recipes and resources (unique colored gems - spawn in half/quandrant near other players!)
+Additional recipes and resources
 
 offline time pay out logarithmically
 floaters look bad when two drones sell 2 things on the same frame, add an offset

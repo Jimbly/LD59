@@ -86,7 +86,7 @@ import {
 } from './palette';
 import { getDisplayName, titleInit, titleReturn } from './title';
 
-const { abs, floor, random, max, min, sin } = Math;
+const { abs, floor, random, max, min, sin, pow, round } = Math;
 
 window.Z = window.Z || {};
 Z.BACKGROUND = 1;
@@ -143,17 +143,29 @@ const RESOURCES = [
   'wood',
   'stone',
   'fruit',
+  'gema',
+  'gemb',
   'beer',
   'jam',
   'fire',
 ] as const;
 type ResourceType = typeof RESOURCES[number];
 const BASE_RESOURCES = [
+  'gema',
   'wood',
   'stone',
-  'fruit'
+  'fruit',
 ] as const;
 type BaseResourceType = typeof BASE_RESOURCES[number];
+
+const RESOURCE_NAME: Partial<Record<ResourceType, string>> = {
+  gema: 'Amethyst',
+  gemb: 'Sapphire',
+};
+function resName(res: ResourceType): string {
+  return capitalize(RESOURCE_NAME[res] || res);
+}
+
 type LevelDef = {
   name: string;
   display_name: string;
@@ -181,6 +193,7 @@ const level_defs: LevelDef[] = [{
     wood: 0,
     stone: 0,
     fruit: 0,
+    gema: 0,
   },
 }, {
   name: 'small1p',
@@ -196,6 +209,7 @@ const level_defs: LevelDef[] = [{
     wood: 3,
     stone: 3,
     fruit: 3,
+    gema: 1,
   },
 }, {
   name: 'med2p',
@@ -211,6 +225,7 @@ const level_defs: LevelDef[] = [{
     wood: 4,
     stone: 4,
     fruit: 4,
+    gema: 3,
   },
 }, {
   name: 'large4p',
@@ -226,6 +241,7 @@ const level_defs: LevelDef[] = [{
     wood: 5,
     stone: 5,
     fruit: 5,
+    gema: 3,
   },
 }/*, ...(engine.DEBUG ? [{
   name: 'debug',
@@ -415,6 +431,7 @@ function cmpTickable(a: SimMapEntry, b: SimMapEntry): number {
 const VALF = 65;
 const VALW = 80;
 const VALS = 100;
+const VALG = 250;
 const VAL2 = 135;
 
 const recipes: [ResourceType, number, ResourceType, ResourceType | null][] = [
@@ -426,6 +443,9 @@ const recipes: [ResourceType, number, ResourceType, ResourceType | null][] = [
   ['fruit', VALF, 'fruit', null],
   ['wood', VALW, 'wood', null],
   ['stone', VALS, 'stone', null],
+
+  ['gema', VALG, 'gema', null],
+  ['gemb', VALG, 'gemb', null],
 ];
 const RESOURCE_VALUE = {} as Record<ResourceType, number>;
 recipes.forEach(function (entry) {
@@ -521,6 +541,7 @@ class SimState {
   tickables: SimMapEntry[];
   last_uid = 0;
   player_money_earned: number[];
+  player_resources_sold: Partial<Record<ResourceType, number>>[];
   transfers: [
     'spawn'|'pickup'|'from'|'within'|'trash', // to drone
     ResourceType, number, number, number, number
@@ -533,8 +554,10 @@ class SimState {
     let num_players = players.length;
     this.power = parent.maxPower();
     this.player_money_earned = [];
+    this.player_resources_sold = [];
     for (let ii = 0; ii < num_players; ++ii) {
       this.player_money_earned.push(0);
+      this.player_resources_sold.push({});
     }
 
     this.busy = new Array(h);
@@ -596,7 +619,7 @@ class SimState {
         cell,
         contents: null,
         multi_contents: [],
-        quantity: 3, // only used if resource
+        quantity: cell.resource && cell.resource.startsWith('gem') ? 1 :3, // only used if resource
       };
       this.tickables.push(tickable);
       this.sim_map[y][x] = tickable;
@@ -685,6 +708,11 @@ class SimState {
         if (res) {
           let resource_value = resourceValue(res);
           let player_idx = this.parent.playerIdxFromPos(ticker.x, ticker.y);
+          let resource_count = this.player_resources_sold[player_idx][res] || 0;
+          this.player_resources_sold[player_idx][res] = resource_count + 1;
+          if (resource_count) {
+            resource_value = max(1, round(resource_value * pow(0.5, resource_count)));
+          }
           this.player_money_earned[player_idx] += resource_value;
           ticker.multi_contents[ii] = null;
 
@@ -697,7 +725,7 @@ class SimState {
           this.float?.(
             'base_sale',
             ticker.x + 1, ticker.y + 1,
-            `${res}: +$${resource_value}`);
+            `${resName(res)}: +$${resource_value}`);
           // playUISound('sell');
         }
       }
@@ -1190,27 +1218,56 @@ class GameState {
         }
       }
 
+      let borders: JSVec4[] = [];
+      if (zone[0] > 0 || num_players === 1) {
+        borders.push([zone[0] + 1, zone[1] + 1, 2, h0 - 2]);
+      }
+      if (zone[2] < w - 1 || num_players === 1) {
+        borders.push([zone[2] - 2, zone[1] + 1, 2, h0 - 2]);
+      }
+      if (zone[1] > 0 || num_players === 1) {
+        borders.push([zone[0] + 1, zone[1] + 1, w0 - 2, 2]);
+      }
+      if (zone[3] < h - 1 || num_players === 1) {
+        borders.push([zone[0] + 1, zone[3] - 2, w0 - 2, 2]);
+      }
+      let border_idx = rand.range(borders.length);
+
       BASE_RESOURCES.forEach((resource) => {
         for (let ii = 0; ii < ld.resources[resource]; ++ii) {
           // eslint-disable-next-line no-labels
           outer:
           while (true) {
+            let is_gem = resource.startsWith('gem');
             let x = zone[0] + 1 + rand.range(w0 - 2);
             let y = zone[1] + 1 + rand.range(h0 - 2);
+
+            let place_resource: ResourceType = resource;
+            if (is_gem) {
+              place_resource = (kk === 1 || kk === 2) ? 'gemb' : 'gema';
+              // spawn along borders
+              let border = borders[border_idx];
+              border_idx = (border_idx + 1) % borders.length;
+              x = border[0] + rand.range(border[2]);
+              y = border[1] + rand.range(border[3]);
+            }
             if (this.map[y][x]) {
               continue;
             }
             for (let jj = 0; jj < DX.length; ++jj) {
               let x2 = x + DX[jj];
               let y2 = y + DY[jj];
-              if ((this.map[y2] || [])[x2]?.type === 'base') {
+              let neighbor = (this.map[y2] || [])[x2];
+              if (neighbor && (neighbor.type === 'base' ||
+                neighbor.type === 'resource' && neighbor.resource === place_resource
+              )) {
                 // eslint-disable-next-line no-labels
                 continue outer;
               }
             }
             this.map[y][x] = {
               type: 'resource',
-              resource,
+              resource: place_resource,
             };
             break;
           }
@@ -1847,7 +1904,7 @@ function buildMode(): void {
     } else {
       let tooltip = '';
       if (hover_cell.type === 'resource') {
-        tooltip = `Resource (${capitalize(hover_cell.resource!)})\nRaw value: $${resourceValue(hover_cell.resource!)}`;
+        tooltip = `Resource (${resName(hover_cell.resource!)})\nRaw value: $${resourceValue(hover_cell.resource!)}`;
       } else if (hover_cell.type === 'base') {
         if (in_my_zone) {
           tooltip = 'Your home base.  Deliver resources here to gain money at the end of the day.';
@@ -2377,7 +2434,20 @@ function drawHelp(): void {
     y, h: y0 + h - y - 2,
     z,
   });
+  x = 8;
   y = 0;
+
+  markdownAuto({
+    font_style: style_text,
+    x: floor(x + (w - 8 * 2) * 2 / 3),
+    y,
+    w: floor(w / 3) - 16,
+    align: ALIGN.HWRAP | ALIGN.HCENTER,
+    text: `GENERAL INFO
+
+Sale prices decrease by 50% for each identical item sold.
+`,
+  });
 
   let sorted = recipes.slice(0);
   sorted.sort((a, b) => {
@@ -2396,14 +2466,14 @@ function drawHelp(): void {
       w: ICON_SIZE, h: ICON_SIZE,
     });
     xx += ICON_SIZE + 4;
-    let is_base = BASE_RESOURCES.includes(resource as BaseResourceType);
+    let is_base = BASE_RESOURCES.includes(resource as BaseResourceType) || resource === 'gemb';
     markdownAuto({
       font_style: style_text,
       x: xx, y, z, h: ROW_SIZE,
       w: x + w - xx,
       line_height: TILE_SIZE,
       align: ALIGN.HWRAP,
-      text: `${capitalize(resource)} - $${recipe[1]}${is_base ? ` - harvested from [img=spawn-${resource}]` : ''}\n` +
+      text: `${resName(resource)} - $${recipe[1]}${is_base ? ` - harvested from [img=spawn-${resource}]` : ''}\n` +
         `Crafted from: [img=resource-${recipe[2]}] +` +
         ` ${recipe[3] ? `[img=resource-${recipe[3]}]` : 'anything less specific'}`,
     });
@@ -2555,7 +2625,7 @@ function statePlay(dt: number): void {
       let sim_tile = sim_row[xx];
       if (tile.type === 'resource') {
         frame = `spawn-${tile.resource!}`;
-        let quantity = sim_tile ? sim_tile.quantity : 3;
+        let quantity = sim_tile ? sim_tile.quantity : tile.resource!.startsWith('gem') ? 1 : 3;
         if (t < 0.5 && isTransferFrom(xx, yy)) {
           ++quantity;
         }
