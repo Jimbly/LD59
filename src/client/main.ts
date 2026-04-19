@@ -21,6 +21,7 @@ import {
   keyDown,
   KEYS,
   keyUpEdge,
+  mouseOver,
   mousePos,
   mouseUpEdge,
 } from 'glov/client/input';
@@ -28,6 +29,7 @@ import { markdownAuto } from 'glov/client/markdown';
 import { markdownSetColorStyle } from 'glov/client/markdown_renderables';
 import { ClientChannelWorker, netInit } from 'glov/client/net';
 import { socialInit } from 'glov/client/social';
+import { SPOT_NAVTYPE_SIMPLE, spotSetNavtype } from 'glov/client/spot';
 import { spriteSetGet } from 'glov/client/sprite_sets';
 import { BLEND_ADDITIVE } from 'glov/client/sprites';
 import {
@@ -37,7 +39,6 @@ import {
   drawCircle,
   drawRect2,
   drawTooltip,
-  isMenuUp,
   modalTextEntry,
   panel,
   playUISound,
@@ -1198,12 +1199,31 @@ class GameState {
     }
   }
 
-  calcValue(): number {
+  revenue_cache: number[] | null = null;
+  invalidate(): void {
+    this.revenue_cache = null;
+  }
+  calcValues(): void {
+    if (this.revenue_cache) {
+      return;
+    }
     let ss = new SimState(this, null);
     while (ss.power >= -1) {
       ss.tick();
     }
-    let v = ss.player_money_earned[this.my_player_idx];
+    this.revenue_cache = ss.player_money_earned;
+  }
+  totalRevenue(): number {
+    this.calcValues();
+    let r = 0;
+    for (let ii = 0; ii < this.revenue_cache!.length; ++ii) {
+      r += this.revenue_cache![ii];
+    }
+    return r;
+  }
+  calcValue(): number {
+    this.calcValues();
+    let v = this.revenue_cache![this.my_player_idx];
     return v;
   }
 
@@ -1320,6 +1340,7 @@ class GameState {
       this.me().money += dmoney;
     }
     if (dmoney || diff) {
+      this.invalidate();
       // eslint-disable-next-line @typescript-eslint/no-use-before-define
       sendDiff();
     }
@@ -1389,6 +1410,7 @@ class GameState {
       this.resetDay();
       this.last_saved_my_payout = this.me().payout_index;
     }
+    this.invalidate();
   }
 }
 
@@ -1466,13 +1488,15 @@ let is_ff = false;
 function drawHUD(eff_is_ff: boolean): void {
   let y = camera2d.y0();
   let max_power = game_state.maxPower();
+  let is_mp = game_state.players.length > 1;
   if (!game_state.tutorial_state || game_state.tutorial_state >= 4) {
     font.draw({
       style: style_floater,
       x: 0, w: game_width,
       y: y + 2,
       align: ALIGN.HCENTER | ALIGN.HWRAP,
-      text: `Revenue: $${game_state.calcValue()}/day of $${level_defs[game_state.ld_idx].goal}/day Goal`,
+      text: `${is_mp ? '(Team) ' : ''}Revenue: $${game_state.totalRevenue()}/day` +
+        ` of $${level_defs[game_state.ld_idx].goal}/day Goal`,
     });
   }
   if (game_state.sim_state.drones.length) {
@@ -1525,11 +1549,19 @@ function drawHUD(eff_is_ff: boolean): void {
 
   let net_worth = game_state.calcNetWorth();
   let money = game_state.me().money;
-  font.draw({
-    style: style_floater,
+  let panel_h = font.draw({
+    style: style_text,
     x, y, z, w,
     align: ALIGN.HWRAP | ALIGN.HCENTER,
-    text: `Money:\n$${money}${net_worth !== money ? `\n\nNet worth:\n$${net_worth}` : ''}`,
+    text: `Money:\n$${money}\n\nRevenue:\n$${game_state.calcValue()}` +
+      `${net_worth !== money ? `\n\nNet worth:\n$${net_worth}` : ''}`,
+  });
+  const PANEL_PAD = 4;
+  panel({
+    x: x - PANEL_PAD,
+    y: y - PANEL_PAD,
+    z: z - 1, w: w + PANEL_PAD * 2,
+    h: panel_h + PANEL_PAD * 2,
   });
 
   x = camera2d.x1();
@@ -1581,7 +1613,9 @@ function drawFloaters(floaters: Floater[], dt: number, z: number, size?: number)
 }
 
 function buildMode(): void {
-  if (isMenuUp()) {
+  if (!mouseOver({
+    peek: true,
+  })) {
     return;
   }
   let mouse_pos = mousePos();
@@ -2221,10 +2255,18 @@ function statePlay(dt: number): void {
   }
 
   let drag_ret = drag(full_rect);
-  if (drag_ret && !game_state.tutorial_state) {
+  if (drag_ret) {
     view_center[0] -= drag_ret.delta[0] / TILE_SIZE;
     view_center[1] -= drag_ret.delta[1] / TILE_SIZE;
-  } else if (game_state.tutorial_state) {
+  }
+  let scroll_x = keyDown(KEYS.A) * -1 + keyDown(KEYS.D);
+  let scroll_y = keyDown(KEYS.W) * -1 + keyDown(KEYS.S);
+  view_center[0] += scroll_x * 0.03;
+  view_center[1] += scroll_y * 0.03;
+  view_center[0] = clamp(view_center[0], 0, game_state.w);
+  view_center[1] = clamp(view_center[1], 0, game_state.h);
+  if (game_state.tutorial_state) {
+    view_center[0] = game_state.w / 2 + 2;
     view_center[1] = game_state.h / 2 + 2;
   }
   camera2d.push();
@@ -2616,6 +2658,7 @@ export function main(): void {
   font = uiGetFont();
 
   socialInit();
+  spotSetNavtype(SPOT_NAVTYPE_SIMPLE);
 
   // Perfect sizes for pixely modes
   scaleSizes(13 / 32);

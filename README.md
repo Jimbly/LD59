@@ -15,10 +15,6 @@ Start with: `npm start` (after running `npm i` once)
 TODO
 ====
 
-WASD should scroll the play field
-Multiplayer logic
-  goal: total revenue / day
-    show own revenue under money?
 High scores (minimum total net worth to meet revenue goal, fewest day ticks secondary)
 
 Questions:
