@@ -26,9 +26,10 @@ import {
   mouseUpEdge,
 } from 'glov/client/input';
 import { markdownAuto } from 'glov/client/markdown';
-import { markdownSetColorStyle } from 'glov/client/markdown_renderables';
+import { markdownImageRegisterAutoAtlas, markdownSetColorStyle } from 'glov/client/markdown_renderables';
 import { ClientChannelWorker, netInit } from 'glov/client/net';
 import { scoreAlloc, ScoreSystem } from 'glov/client/score';
+import { ScrollArea, scrollAreaCreate } from 'glov/client/scroll_area';
 import { socialInit } from 'glov/client/social';
 import { SPOT_NAVTYPE_SIMPLE, spotSetNavtype } from 'glov/client/spot';
 import { spriteSetGet } from 'glov/client/sprite_sets';
@@ -40,6 +41,7 @@ import {
   drawCircle,
   drawRect2,
   drawTooltip,
+  menuUp,
   modalTextEntry,
   panel,
   playUISound,
@@ -56,6 +58,7 @@ import { Differ, differCreate } from 'glov/common/differ';
 import { randCreate } from 'glov/common/rand_alea';
 import { DataObject, TSMap } from 'glov/common/types';
 import {
+  capitalize,
   clamp,
   clone,
   easeIn,
@@ -1560,6 +1563,7 @@ function cellFrame(type: CellType, rot: number): string {
 let selected_tool = -1;
 let selected_rot = 0;
 let is_ff = false;
+let show_help = false;
 function drawHUD(eff_is_ff: boolean): void {
   let y = camera2d.y0();
   let max_power = game_state.maxPower();
@@ -1662,6 +1666,11 @@ function drawHUD(eff_is_ff: boolean): void {
     'Hotkey: Hold SHIFT, or press F to toggle.', KEYS.F)
   ) {
     is_ff = !is_ff;
+  }
+  if (!game_state.tutorial_state) {
+    if (gamebutton('icon-help', 'Show Help and Recipe List\n\nHotkey: F1', KEYS.F1)) {
+      show_help = !show_help;
+    }
   }
 
 }
@@ -1793,7 +1802,7 @@ function buildMode(): void {
     } else {
       let tooltip = '';
       if (hover_cell.type === 'resource') {
-        tooltip = `Resource (${hover_cell.resource})\nRaw value: $${resourceValue(hover_cell.resource!)}`;
+        tooltip = `Resource (${capitalize(hover_cell.resource!)})\nRaw value: $${resourceValue(hover_cell.resource!)}`;
       } else if (hover_cell.type === 'base') {
         if (in_my_zone) {
           tooltip = 'Your home base.  Deliver resources here to gain money at the end of the day.';
@@ -2276,6 +2285,96 @@ function drawTutorial(): void {
   }
 }
 
+let help_scroll: ScrollArea;
+function drawHelp(): void {
+
+  let x0 = camera2d.x0() + 8;
+  let y0 = camera2d.y0() + 8;
+  let w0 = camera2d.w() - 8 * 2;
+  let w = w0;
+  let h = camera2d.h() - 8 * 2;
+  let z = Z.MODAL;
+  let x = x0;
+  let y = y0;
+  y += 8;
+  x += 2;
+  w -= 2 * 2;
+
+  if (button({
+    x, y: y - 6, z,
+    h: BUTTON_HEIGHT,
+    w: BUTTON_HEIGHT,
+    hotkeys: [KEYS.ESC, KEYS.F1, KEYS.H],
+    text: 'X',
+  })) {
+    show_help = false;
+  }
+
+  font.draw({
+    style: style_text,
+    x, y, z, w,
+    size: FONT_HEIGHT * 1.5,
+    align: ALIGN.HCENTER,
+    text: 'Recipe List'
+  });
+  y += FONT_HEIGHT * 1.5 + 2;
+  let ICON_SIZE = TILE_SIZE;
+  let ROW_SIZE = TILE_SIZE * 2;
+
+  if (!help_scroll) {
+    help_scroll = scrollAreaCreate({
+      background_color: null,
+      auto_hide: true,
+    });
+  }
+  help_scroll.begin({
+    x: x, w,
+    y, h: y0 + h - y - 2,
+    z,
+  });
+  y = 0;
+
+  let sorted = recipes.slice(0);
+  sorted.sort((a, b) => {
+    return a[1] - b[1];
+  });
+
+  for (let ii = 0; ii < sorted.length; ++ii) {
+    let recipe = sorted[ii];
+    let resource = recipe[0];
+    let xx = x;
+    // if (ii & 1) {
+    //   xx += 80;
+    // }
+    autoAtlas('main', `resource-${resource}`).draw({
+      x: xx, y: y + (ROW_SIZE - ICON_SIZE)/2, z,
+      w: ICON_SIZE, h: ICON_SIZE,
+    });
+    xx += ICON_SIZE + 4;
+    let is_base = BASE_RESOURCES.includes(resource as BaseResourceType);
+    markdownAuto({
+      font_style: style_text,
+      x: xx, y, z, h: ROW_SIZE,
+      w: x + w - xx,
+      line_height: TILE_SIZE,
+      align: ALIGN.HWRAP,
+      text: `${capitalize(resource)} - $${recipe[1]}${is_base ? ` - harvested from [img=spawn-${resource}]` : ''}\n` +
+        `Crafted from: [img=resource-${recipe[2]}] +` +
+        ` ${recipe[3] ? `[img=resource-${recipe[3]}]` : 'anything less specific'}`,
+    });
+    y += ROW_SIZE + 8;
+  }
+
+  help_scroll.end(y);
+
+  panel({
+    x: x0, y: y0, z: z - 1,
+    w: w0, h,
+  });
+
+  menuUp();
+}
+
 let counter = 0;
 function statePlay(dt: number): void {
   let dt_orig = dt;
@@ -2303,6 +2402,9 @@ function statePlay(dt: number): void {
   }
   let t = counter / TICK_TIME;
 
+  if (show_help) {
+    drawHelp();
+  }
   drawHUD(eff_is_ff);
   drawTutorial();
 
@@ -2680,6 +2782,7 @@ export function playInit(level_idx: number, player_idx: number, channel: ClientC
   selected_rot = 0;
   ui_floaters.length = 0;
   is_ff = false;
+  show_help = false;
   game_state = new GameState(level_idx, player_idx);
   game_state.deserialize(channel.getChannelData<GameStateSerialized>('public.gs', null!), false);
   differ = differCreate(game_state.serialize(), { history_size: 128 });
@@ -2768,4 +2871,5 @@ export function main(): void {
     outline_color: palette_font[PAL_WHITE],
     outline_width: 2.5,
   }));
+  markdownImageRegisterAutoAtlas('main');
 }
