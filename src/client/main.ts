@@ -247,7 +247,7 @@ const level_defs: LevelDef[] = [{
   starting_power: 9,
   starting_money: 600,
   seed: 2345,
-  goal: 2000,
+  goal: 1600,
   resources: {
     wood: 3,
     stone: 3,
@@ -260,10 +260,10 @@ const level_defs: LevelDef[] = [{
   players: 2,
   w: 17,
   h: 21,
-  starting_power: 10,
+  starting_power: 11,
   starting_money: 600,
   seed: 0,
-  goal: 6000,
+  goal: 4000,
   resources: {
     wood: 4,
     stone: 4,
@@ -276,10 +276,10 @@ const level_defs: LevelDef[] = [{
   players: 4,
   w: 25,
   h: 21,
-  starting_power: 11,
+  starting_power: 13,
   starting_money: 600,
   seed: 0,
-  goal: 14000,
+  goal: 10000,
   resources: {
     wood: 5,
     stone: 5,
@@ -435,12 +435,12 @@ type Drone = {
 };
 
 const COST_TABLE: Partial<Record<CellType, JSVec2>> = {
-  spawner: [200, 100],
-  rotate: [20, 5],
-  storage: [50, 10],
-  craft: [1000, 500],
-  'signal-stop': [20, 10],
-  'signal-go': [20, 10],
+  spawner: [200, 150],
+  rotate: [20, 10],
+  storage: [50, 100],
+  craft: [1000, 750],
+  'signal-stop': [20, 80],
+  'signal-go': [20, 80],
   'signal-zoom': [300, 900],
   sign: [100, 75],
 };
@@ -974,6 +974,7 @@ class SimState {
         target_drone.contents = null;
         target_drone.gain_resource_tick = this.tick_id;
         playSoundDelayed(target_drone.x, target_drone.y, 'dropoff');
+        break;
       }
     }
   }
