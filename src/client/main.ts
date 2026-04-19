@@ -46,7 +46,7 @@ import {
 import * as walltime from 'glov/client/walltime';
 import { Differ, differCreate } from 'glov/common/differ';
 import { randCreate } from 'glov/common/rand_alea';
-import { TSMap } from 'glov/common/types';
+import { DataObject, TSMap } from 'glov/common/types';
 import {
   clamp,
   clone,
@@ -324,7 +324,7 @@ type SimMapEntry = {
 const TICKABLE_ORDER = ['base', 'craft', 'storage', 'resource'];
 function cmpTickable(a: SimMapEntry, b: SimMapEntry): number {
   let ia = TICKABLE_ORDER.indexOf(a.cell.type);
-  let ib = TICKABLE_ORDER.indexOf(a.cell.type);
+  let ib = TICKABLE_ORDER.indexOf(b.cell.type);
   if (ia !== ib) {
     return ia - ib;
   }
@@ -1278,7 +1278,7 @@ class GameState {
     };
   }
 
-  deserialize(ser: GameStateSerialized): void {
+  deserialize(ser: GameStateSerialized, dynamic: boolean): void {
     let { map, w, h } = this;
     assert.equal(ser.map.length, h);
     assert.equal(ser.map[0].length, w);
@@ -1295,7 +1295,9 @@ class GameState {
       this.players[ii] = clone(ser.players[ii]);
     }
 
-    this.resetDay();
+    if (!dynamic) {
+      this.resetDay();
+    }
   }
 }
 
@@ -2357,8 +2359,21 @@ export function playNewGameState(level_idx: number): GameStateSerialized {
   return temp.serialize();
 }
 
+function onChannelData(channel_data: DataObject): void {
+  let ser = game_room.getChannelData<GameStateSerialized>('public.gs', null!);
+  let diff = differ.update(ser);
+  if (diff.length) {
+    // apply other people's changes
+    game_state.deserialize(ser, true);
+  }
+}
+
 export function playInit(level_idx: number, player_idx: number, channel: ClientChannelWorker): void {
   game_room = channel;
+  if (!(channel as unknown as DataObject).set_on_batch_data) {
+    (channel as unknown as DataObject).set_on_batch_data = true;
+    channel.on('channel_data_batch', onChannelData);
+  }
   engine.setState(statePlay);
   counter = 0;
   selected_tool = -1;
@@ -2366,7 +2381,7 @@ export function playInit(level_idx: number, player_idx: number, channel: ClientC
   ui_floaters.length = 0;
   is_ff = false;
   game_state = new GameState(level_idx, player_idx);
-  game_state.deserialize(channel.getChannelData<GameStateSerialized>('public.gs', null!));
+  game_state.deserialize(channel.getChannelData<GameStateSerialized>('public.gs', null!), false);
   differ = differCreate(game_state.serialize(), { history_size: 128 });
 }
 

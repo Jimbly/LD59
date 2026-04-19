@@ -155,6 +155,7 @@ ClientChannelWorker.prototype.handleBatchSet = function (data, resp_func) {
     ++this.channel_data_ver;
     this.emit('channel_data', this.data, `public.${key}`, value);
   }
+  this.emit('channel_data_batch', this.data);
   resp_func();
 };
 
