@@ -125,20 +125,34 @@ RoomListWorker.registerLoggedInClientHandler('room_join', function (
   room_id: string,
   resp_func: NetResponseCallback<RoomResponse>
 ): void {
+  let { user_id } = src;
   assert(room_id);
   assert.equal(typeof room_id, 'string');
   assert(room_id.match(/^[0-9A-Z]+$/));
   let room = this.getChannelData<RoomRecord | null>(`private.rooms.${room_id}`, null);
   assert(room);
+
+  for (let player_idx = 0; player_idx < room.players.length; ++player_idx) {
+    if (room.players[player_idx] === `left:${user_id}`) {
+      this.setChannelData(`private.rooms.${room_id}.players.${player_idx}`, user_id);
+    }
+    if (room.players[player_idx] === user_id) {
+      return resp_func(null, {
+        room_id,
+        player_idx,
+      });
+    }
+  }
+
   if (room.players.length >= room.num_players) {
     return resp_func('ERR_ROOM_FULL');
   }
   let player_idx = room.players.length;
-  room.players.push(src.user_id);
+  room.players.push(user_id);
   this.setChannelData(`private.rooms.${room_id}.players`, room.players);
   this.sendChannelMessage<UserJoinParam>(`multiplayer.${room_id}`, 'user_join', {
     player_idx,
-    user_id: src.user_id,
+    user_id: user_id,
   }, function (err) {
     if (err) {
       throw err;
@@ -166,8 +180,7 @@ RoomListWorker.registerLoggedInClientHandler('forget', function (
   if (player_idx === -1) {
     return resp_func('ERR_NOT_IN_ROOM');
   }
-  room.players[player_idx] = `left:${user_id}`;
-  this.setChannelData(`private.rooms.${room_id}.players.${player_idx}`, room.players[player_idx]);
+  this.setChannelData(`private.rooms.${room_id}.players.${player_idx}`, `left:${user_id}`);
   resp_func();
   // this.sendChannelMessage<UserJoinParam>(`multiplayer.${room_id}`, 'user_leave', {
   //   player_idx,

@@ -22,6 +22,7 @@ import type { RoomListResponse, RoomRecord, RoomRequest, RoomResponse } from '..
 import { createAccountUI } from './account_ui';
 import {
   BUTTON_HEIGHT,
+  FONT_HEIGHT,
   game_height,
   game_width,
   GameStateSerialized,
@@ -106,48 +107,63 @@ function onBadJoin(): void {
   net_msg = 'Error: room not initialized, try refreshing or navigating back to the title screen';
 }
 
-function joinRoom(room_id: string, on_init: (channel: ClientChannelWorker) => void): void {
+function joinRoom(ask_permission: boolean, room_id: string, on_init: (channel: ClientChannelWorker) => void): void {
   net_msg = 'Joining...';
-  let channel = netSubs().getChannel(`multiplayer.${room_id}`, true);
-  channel.onceSubscribe(function () {
-    let game_state = channel.getChannelData<GameStateSerialized>('public.gs', null!);
-    if (!game_state) {
-      on_init(channel);
-    } else {
-      assert.equal(typeof game_state.ld_idx, 'number');
-      let player_idx = -1;
-      let open_slot = false;
-      for (let ii = 0; ii < game_state.players.length; ++ii) {
-        if (game_state.players[ii].user_id === netUserId()) {
-          player_idx = ii;
-        } else if (!game_state.players[ii].user_id) {
-          open_slot = true;
-        }
-      }
-      if (player_idx !== -1) {
-        net_msg = null;
-        playInit(game_state.ld_idx, player_idx, channel);
-        return;
-      }
-      // not auth'd to room
-      if (!open_slot) {
-        // TODO: spectate?
-        return onBadJoin();
-      }
-      // Unsub, ask permission, try again
-      channel.unsubscribe();
-      netSubs().getChannel('roomlist.the', false).send<RoomResponse, string>('room_join', room_id,
-        function (err, resp) {
-          if (err || !resp) {
-            net_msg = err || 'empty response';
-            throw err;
+
+  function doit(): void {
+    let channel = netSubs().getChannel(`multiplayer.${room_id}`, true);
+    channel.onceSubscribe(function () {
+      let game_state = channel.getChannelData<GameStateSerialized>('public.gs', null!);
+      if (!game_state) {
+        on_init(channel);
+      } else {
+        assert.equal(typeof game_state.ld_idx, 'number');
+        let player_idx = -1;
+        let open_slot = false;
+        for (let ii = 0; ii < game_state.players.length; ++ii) {
+          if (game_state.players[ii].user_id === netUserId()) {
+            player_idx = ii;
+          } else if (!game_state.players[ii].user_id) {
+            open_slot = true;
           }
-          urlhash.set('room', resp.room_id);
-          joinRoom(resp.room_id, onBadJoin);
         }
-      );
-    }
-  });
+        if (player_idx !== -1) {
+          net_msg = null;
+          playInit(game_state.ld_idx, player_idx, channel);
+          return;
+        }
+        channel.unsubscribe();
+        // not auth'd to room
+        if (!open_slot || ask_permission) {
+          // TODO: spectate?
+          return onBadJoin();
+        }
+        // Try again with permission
+        ask_permission = true;
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        askPermission();
+      }
+    });
+  }
+
+  function askPermission(): void {
+    netSubs().getChannel('roomlist.the', false).send<RoomResponse, string>('room_join', room_id,
+      function (err, resp) {
+        if (err || !resp) {
+          net_msg = err || 'empty response';
+          throw err;
+        }
+        urlhash.set('room', resp.room_id);
+        doit();
+      }
+    );
+  }
+
+  if (ask_permission) {
+    askPermission();
+  } else {
+    doit();
+  }
 }
 
 
@@ -162,7 +178,7 @@ function newGame(idx: number): void {
       throw err;
     }
     urlhash.set('room', resp.room_id);
-    joinRoom(resp.room_id, function (channel) {
+    joinRoom(false, resp.room_id, function (channel) {
       net_msg = 'Initializing new game...';
       if (resp.player_idx !== 0) {
         net_msg = 'Error: game not yet initialized, try reloading';
@@ -296,7 +312,7 @@ function stateTitle(dt: number): void {
   });
 
   if (urlhash.get('room') && !net_msg) {
-    joinRoom(urlhash.get('room'), onBadJoin);
+    joinRoom(true, urlhash.get('room'), onBadJoin);
   }
 
   if (net_msg) {
@@ -381,7 +397,7 @@ function stateTitle(dt: number): void {
       text: can_resume ? 'Resume' : 'Join',
     })) {
       urlhash.set('room', best_room!.room_id);
-      joinRoom(best_room!.room_id, onBadJoin);
+      joinRoom(!can_resume, best_room!.room_id, onBadJoin);
     }
     x += button_w + 4;
 
@@ -421,6 +437,13 @@ function stateTitle(dt: number): void {
   let x = 16;
   W -= 32;
 
+  font.draw({
+    x, y, w: W,
+    text: 'Previous Games / Open Rooms',
+    align: ALIGN.HCENTER,
+  });
+  y += FONT_HEIGHT + 2;
+
   button_w = (W - 4) / 2;
   button_h = text_height * 4;
   let join_button_w = BUTTON_HEIGHT * 3;
@@ -433,8 +456,9 @@ function stateTitle(dt: number): void {
     let entry = room_list[ii];
     let ld = level_defs[entry.level_idx];
     let y_save = y;
-    drawRect(x-1, y-1, x + button_w+1, y + button_h+1, z - 0.1, palette[PAL_BLACK]);
     let has_me = entry.players.includes(netUserId()!);
+    drawRect(x-1, y-1, x + button_w+1, y + button_h+1, z - 0.1,
+      has_me ? palette[15] : palette[PAL_BLACK]);
 
     if (buttonText({
       x: x + button_w - join_button_w,
@@ -445,7 +469,7 @@ function stateTitle(dt: number): void {
       text: has_me ? 'Resume' : 'Join',
     })) {
       urlhash.set('room', entry.room_id);
-      joinRoom(entry.room_id, onBadJoin);
+      joinRoom(!has_me, entry.room_id, onBadJoin);
     }
     if (has_me) {
       if (buttonText({
