@@ -203,7 +203,7 @@ const level_defs: LevelDef[] = [{
   starting_power: 9,
   starting_money: 600,
   seed: 2345,
-  goal: 1000,
+  goal: 800,
   resources: {
     wood: 3,
     stone: 3,
@@ -1678,14 +1678,25 @@ function drawHUD(eff_is_ff: boolean): void {
   let max_power = game_state.maxPower();
   let is_mp = game_state.players.length > 1;
   if (!game_state.tutorial_state || game_state.tutorial_state >= 4) {
+    let victory = game_state.totalRevenue() >= game_state.ld.goal;
     font.draw({
-      style: style_floater,
+      style: victory ? style_base_money : style_floater,
       x: 0, w: game_width,
       y: y + 2,
-      align: ALIGN.HCENTER | ALIGN.HWRAP,
+      align: ALIGN.HCENTER,
       text: `${is_mp ? '(Team) ' : ''}Revenue: $${game_state.totalRevenue()}/day` +
-        ` of $${level_defs[game_state.ld_idx].goal}/day Goal`,
+        ` of $${game_state.ld.goal}/day Goal`,
     });
+    if (victory) {
+      font.draw({
+        style: style_floater,
+        x: 60, w: game_width - 60 * 2,
+        y: y + 2 + FONT_HEIGHT,
+        align: ALIGN.HCENTER | ALIGN.HWRAP,
+        text: 'Goal complete!  You can now return to the Main Menu and start a new game,' +
+          ' or stick around, experiment, and optimize for a smaller Build Cost.',
+      });
+    }
   }
   if (game_state.sim_state.drones.length) {
     font.draw({
@@ -1743,7 +1754,7 @@ function drawHUD(eff_is_ff: boolean): void {
     x, y, z, w,
     align: ALIGN.HWRAP | ALIGN.HCENTER,
     text: `Money:\n$${money}\n\nRevenue:\n$${game_state.calcValue()}/day` +
-      `${net_worth ? `\n\nBuilt:\n$${net_worth}` : ''}`,
+      `${net_worth ? `\n\nBuild Cost:\n$${net_worth}` : ''}`,
   });
   const PANEL_PAD = 4;
   panel({
