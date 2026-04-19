@@ -180,7 +180,7 @@ function newGame(idx: number): void {
 
 let room_scroll_area: ScrollArea;
 
-function getDispalyName(user_id: string): string {
+export function getDisplayName(user_id: string): string {
   let is_left = user_id.startsWith('left:');
   if (is_left) {
     user_id = user_id.slice(5);
@@ -477,7 +477,7 @@ function stateTitle(dt: number): void {
       x, y, z,
       w: button_w - join_button_w - 1,
       align: ALIGN.HWRAP,
-      text: players.map(getDispalyName).join(', '),
+      text: players.map(getDisplayName).join(', '),
     });
     y += text_height * 3 + 4;
     // hide overflow

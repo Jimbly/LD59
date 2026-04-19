@@ -16,9 +16,11 @@ TODO
 ====
 
 Multiplayer logic
+  split individual stats, money, revenue
   goal: total revenue / day
 High scores (minimum total net worth to meet revenue goal, fewest day ticks secondary)
 Sign object (for multiplayer or personal notes)
+WASD should scroll the play field
 
 Questions:
 * Can we upgrade day length?  If not, then we need faster locomotion / cannons, or longer days and a way to skip
@@ -30,7 +32,9 @@ Show recipes somewhere (just open a recipe book overlay?  tooltip on each resour
 
 floaters look bad when two drones sell 2 things on the same frame, add an offset
 Issue with a 2/4P game that you left showing up at top of list
+Prune rooms with only a single user who left
 Show finished state of games on room list - encourage user to resume a game that has been won but they haven't seen the victory for it yet (and save a high score when they do)
+  Also some progress - encourage joining games with players actively playing
 
 Maybe
 =====

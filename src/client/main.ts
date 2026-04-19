@@ -72,9 +72,9 @@ import {
   palette,
   palette_font,
 } from './palette';
-import { titleInit, titleReturn } from './title';
+import { getDisplayName, titleInit, titleReturn } from './title';
 
-const { abs, floor, max, min, sin } = Math;
+const { abs, floor, random, max, min, sin } = Math;
 
 window.Z = window.Z || {};
 Z.BACKGROUND = 1;
@@ -94,6 +94,10 @@ let font: Font;
 function init(): void {
   // anything?
   autoAtlas('main', 'base');
+}
+
+function inZone(zone: JSVec4, x: number, y: number): boolean {
+  return x >= zone[0] && x <= zone[2] && y >= zone[1] && y <= zone[3];
 }
 
 const clear_color = palette[PAL_BORDER];
@@ -163,7 +167,7 @@ const level_defs: LevelDef[] = [{
   players: 1,
   w: 17,
   h: 15,
-  starting_power: 7,
+  starting_power: 9,
   starting_money: 600,
   seed: 2345,
   goal: 1000,
@@ -175,39 +179,39 @@ const level_defs: LevelDef[] = [{
 }, {
   name: 'Medium (2P)',
   players: 2,
-  w: 25,
-  h: 17,
-  starting_power: 7,
+  w: 17,
+  h: 21,
+  starting_power: 9,
   starting_money: 600,
-  seed: 1234,
+  seed: 0,
   goal: 2000,
   resources: {
-    wood: 3,
-    stone: 3,
-    fruit: 3,
+    wood: 4,
+    stone: 4,
+    fruit: 4,
   },
 }, {
   name: 'Large (4P)',
   players: 4,
-  w: 49,
-  h: 33,
-  starting_power: 7,
+  w: 25,
+  h: 21,
+  starting_power: 9,
   starting_money: 600,
-  seed: 1234,
+  seed: 0,
   goal: 4000,
   resources: {
-    wood: 3,
-    stone: 3,
-    fruit: 3,
+    wood: 5,
+    stone: 5,
+    fruit: 5,
   },
 }, ...(engine.DEBUG ? [{
   name: 'debug',
   players: 1,
   w: 11,
   h: 11,
-  starting_power: 5,
+  starting_power: 9,
   starting_money: 5000,
-  seed: 1234,
+  seed: 0,
   goal: 100000,
   resources: {
     wood: 3,
@@ -963,9 +967,9 @@ type TutState = {
 let tutorial_states: TutState[];
 
 class GameState {
-  w: number;
-  h: number;
-  map: (MapEntry | undefined)[][];
+  w!: number;
+  h!: number;
+  map!: (MapEntry | undefined)[][];
   ld: LevelDef;
   sim_state!: SimState;
   ld_idx: number;
@@ -973,14 +977,51 @@ class GameState {
   players: PlayerData[];
   my_player_idx: number;
   tutorial_state: number;
+
+  // [x0, y0, x1(inclusive), y1(inclusive)]
+  player_zones!: JSVec4[];
+  initStorage(w: number, h: number): void {
+    this.w = w;
+    this.h = h;
+    this.map = new Array(h);
+    for (let ii = 0; ii < h; ++ii) {
+      this.map[ii] = new Array(w);
+    }
+
+    let { players } = this.ld;
+    let w0 = w;
+    let h0 = h;
+    // eslint-disable-next-line default-case
+    switch (players) {
+      case 4:
+        h0 /= 2;
+      case 2: // eslint-disable-line no-fallthrough
+        w0 /= 2;
+    }
+    this.player_zones = [];
+    let { player_zones } = this;
+    for (let ii = 0; ii < players; ++ii) {
+      let x = 0;
+      let y = 0;
+      if (ii & 1) {
+        x += w0;
+      }
+      if (ii >= 2) {
+        y += h0;
+      }
+      player_zones.push([x, y, x + w0 - 1, y + h0 - 1]);
+    }
+
+    let my_zone = this.player_zones[this.my_player_idx];
+    view_center = [(my_zone[0] + my_zone[2]) / 2, (my_zone[1] + my_zone[3]) / 2];
+  }
+
   constructor(ld_idx: number, player_idx: number) {
     let ld = level_defs[ld_idx];
     this.my_player_idx = player_idx;
     this.ld_idx = ld_idx;
     this.ld = ld;
     this.game_start_time = walltime.now() - PAYOUT_TIME / 2;
-    let w = this.w = ld.w;
-    let h = this.h = ld.h;
     let players = [];
     for (let ii = 0; ii < ld.players; ++ii) {
       players.push({
@@ -993,41 +1034,60 @@ class GameState {
     }
     this.players = players;
 
-    this.map = new Array(h);
-    for (let ii = 0; ii < h; ++ii) {
-      this.map[ii] = new Array(w);
+    let { w, h, players: num_players } = ld;
+    let w0 = w;
+    let h0 = h;
+    // eslint-disable-next-line default-case
+    switch (num_players) {
+      case 4:
+        h *= 2;
+      case 2: // eslint-disable-line no-fallthrough
+        w *= 2;
     }
 
-    let basex = floor((w - BASE_SIZE) / 2);
-    let basey = floor((h - BASE_SIZE) / 2);
-    for (let jj = 0; jj < BASE_SIZE; ++jj) {
-      for (let ii = 0; ii < BASE_SIZE; ++ii) {
-        this.map[basey + jj][basex + ii] = {
-          type: 'base',
-          nodraw: Boolean(ii || jj),
-        };
-      }
-    }
+    this.initStorage(w, h);
 
-    view_center = [w / 2, h / 2];
-
-    let rand = randCreate(ld.seed);
-    BASE_RESOURCES.forEach((resource) => {
-      for (let ii = 0; ii < ld.resources[resource]; ++ii) {
-        while (true) {
-          let x = rand.range(w);
-          let y = rand.range(h);
-          if (this.map[y][x]) {
-            continue;
-          }
-          this.map[y][x] = {
-            type: 'resource',
-            resource,
+    let rand = randCreate(ld.seed || floor(random() * (1<<31)));
+    for (let kk = 0; kk < num_players; ++kk) {
+      let zone = this.player_zones[kk];
+      let basex = zone[0] + floor((w0 - BASE_SIZE) / 2);
+      let basey = zone[1] + floor((h0 - BASE_SIZE) / 2);
+      for (let jj = 0; jj < BASE_SIZE; ++jj) {
+        for (let ii = 0; ii < BASE_SIZE; ++ii) {
+          this.map[basey + jj][basex + ii] = {
+            type: 'base',
+            nodraw: Boolean(ii || jj),
           };
-          break;
         }
       }
-    });
+
+      BASE_RESOURCES.forEach((resource) => {
+        for (let ii = 0; ii < ld.resources[resource]; ++ii) {
+          // eslint-disable-next-line no-labels
+          outer:
+          while (true) {
+            let x = zone[0] + 1 + rand.range(w0 - 2);
+            let y = zone[1] + 1 + rand.range(h0 - 2);
+            if (this.map[y][x]) {
+              continue;
+            }
+            for (let jj = 0; jj < DX.length; ++jj) {
+              let x2 = x + DX[jj];
+              let y2 = y + DY[jj];
+              if ((this.map[y2] || [])[x2]?.type === 'base') {
+                // eslint-disable-next-line no-labels
+                continue outer;
+              }
+            }
+            this.map[y][x] = {
+              type: 'resource',
+              resource,
+            };
+            break;
+          }
+        }
+      });
+    }
 
     this.tutorial_state = 0;
     if (ld.name === 'Tutorial') {
@@ -1039,40 +1099,6 @@ class GameState {
       this.map[0][6] = {
         type: 'resource',
         resource: 'stone',
-      };
-    }
-
-    if (engine.DEBUG && false) {
-      this.map[9][4] = {
-        type: 'spawner',
-        rot: 0,
-      };
-      this.map[10][0] = {
-        type: 'spawner',
-        rot: 0,
-      };
-      this.map[7][5] = {
-        type: 'spawner',
-        rot: 3,
-      };
-      this.map[5][1] = {
-        type: 'craft',
-        rot: 0,
-      };
-      this.map[5][2] = {
-        type: 'craft',
-        rot: 0,
-        nodraw: true,
-      };
-      this.map[6][1] = {
-        type: 'craft',
-        rot: 0,
-        nodraw: true,
-      };
-      this.map[6][2] = {
-        type: 'craft',
-        rot: 0,
-        nodraw: true,
       };
     }
 
@@ -1198,6 +1224,10 @@ class GameState {
       this.float('error', x, y, 'Invalid (please follow directions)');
       return;
     }
+    if (!inZone(this.player_zones[this.my_player_idx], x, y)) {
+      this.float('error', x, y, 'Out of bounds');
+      return;
+    }
     let tile = this.map[y][x];
     let dmoney = 0;
     let diff = false;
@@ -1279,9 +1309,12 @@ class GameState {
   }
 
   deserialize(ser: GameStateSerialized, dynamic: boolean): void {
+    if (ser.map.length !== this.h ||
+      ser.map[0].length !== this.w
+    ) {
+      this.initStorage(ser.map[0].length, ser.map.length);
+    }
     let { map, w, h } = this;
-    assert.equal(ser.map.length, h);
-    assert.equal(ser.map[0].length, w);
     assert.equal(ser.ld_idx, this.ld_idx);
     this.game_start_time = ser.game_start_time;
     this.tutorial_state = ser.tut;
@@ -1493,9 +1526,9 @@ function buildMode(): void {
   let mouse_pos = mousePos();
   let x = floor(mouse_pos[0] / TILE_SIZE);
   let y = floor(mouse_pos[1] / TILE_SIZE);
-  if (x < 0 || x >= game_state.w || y < 0 || y >= game_state.h) {
-    return;
-  }
+  // if (x < 0 || x >= game_state.w || y < 0 || y >= game_state.h) {
+  //   return;
+  // }
 
   let tool = (TOOLS[selected_tool] || null) as Tool | null;
   let tool_type = tool?.type || null;
@@ -1536,8 +1569,10 @@ function buildMode(): void {
     }
   }
 
-  if (x + tool_w > game_state.w ||
-    y + tool_w > game_state.h
+  let my_zone = game_state.player_zones[game_state.my_player_idx];
+
+  if (x < my_zone[0] || x + tool_w > my_zone[2] + 1 ||
+    y < my_zone[1] || y + tool_w > my_zone[3] + 1
   ) {
     can_place = false;
   }
@@ -2097,6 +2132,7 @@ function statePlay(dt: number): void {
   }
 
   // draw map
+  let my_zone = game_state.player_zones[game_state.my_player_idx];
   let homebase_x = 0;
   let homebase_y = 0;
   for (let yy = 0; yy < h; ++yy) {
@@ -2104,13 +2140,16 @@ function statePlay(dt: number): void {
     let sim_row = sim_map[yy];
     for (let xx = 0; xx < w; ++xx) {
       let tile = row[xx];
-      bg.draw({
-        x: xx * TILE_SIZE,
-        y: yy * TILE_SIZE,
-        z: z - 0.2,
-        w: TILE_SIZE,
-        h: TILE_SIZE,
-      });
+      let in_my_zone = inZone(my_zone, xx, yy);
+      if (in_my_zone) {
+        bg.draw({
+          x: xx * TILE_SIZE,
+          y: yy * TILE_SIZE,
+          z: z - 0.2,
+          w: TILE_SIZE,
+          h: TILE_SIZE,
+        });
+      }
       if (!tile) {
         continue;
       }
@@ -2136,8 +2175,24 @@ function statePlay(dt: number): void {
         color = color_spawner;
         zz -= 0.1;
       } else if (tile.type === 'base') {
-        homebase_x = xx;
-        homebase_y = yy;
+        if (in_my_zone) {
+          homebase_x = xx;
+          homebase_y = yy;
+        } else {
+          let player_idx = (xx < w/2 ? 0 : 1) +
+            (yy < h / 2 ? 0 : 2);
+          player_idx %= game_state.ld.players;
+          let { user_id } = game_state.players[player_idx];
+          let name = user_id ? getDisplayName(user_id) : '(waiting for player)';
+          font.draw({
+            style: style_base_money,
+            x: (xx + 1.5) * TILE_SIZE,
+            y: yy * TILE_SIZE + 9,
+            z: zz + 0.1,
+            align: ALIGN.HCENTER,
+            text: name,
+          });
+        }
       }
       autoAtlas('main', frame).draw({
         x: xx * TILE_SIZE,
