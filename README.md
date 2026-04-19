@@ -16,7 +16,6 @@ TODO
 ====
 
 Multiplayer logic
-  split individual stats, money, revenue
   goal: total revenue / day
 High scores (minimum total net worth to meet revenue goal, fewest day ticks secondary)
 Sign object (for multiplayer or personal notes)

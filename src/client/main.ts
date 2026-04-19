@@ -446,7 +446,7 @@ class SimState {
   drones: Drone[];
   tickables: SimMapEntry[];
   last_uid = 0;
-  money_earned = 0;
+  player_money_earned: number[];
   transfers: [
     'spawn'|'pickup'|'from'|'within'|'trash', // to drone
     ResourceType, number, number, number, number
@@ -455,8 +455,13 @@ class SimState {
   constructor(parent: GameState, float: FloatCB | null) {
     this.float = float;
     this.parent = parent;
-    let { w, h, map } = parent;
+    let { w, h, map, players } = parent;
+    let num_players = players.length;
     this.power = parent.maxPower();
+    this.player_money_earned = [];
+    for (let ii = 0; ii < num_players; ++ii) {
+      this.player_money_earned.push(0);
+    }
 
     this.busy = new Array(h);
     this.drone_map = new Array(h);
@@ -604,7 +609,8 @@ class SimState {
         let res = ticker.multi_contents[ii];
         if (res) {
           let resource_value = resourceValue(res);
-          this.money_earned += resource_value;
+          let player_idx = this.parent.playerIdxFromPos(ticker.x, ticker.y);
+          this.player_money_earned[player_idx] += resource_value;
           ticker.multi_contents[ii] = null;
 
           this.transfers.push([
@@ -1105,6 +1111,13 @@ class GameState {
     this.resetDay();
   }
 
+  playerIdxFromPos(x: number, y: number): number {
+    let player_idx = (x < this.w/2 ? 0 : 1) +
+      (y < this.h / 2 ? 0 : 2);
+    player_idx %= this.ld.players;
+    return player_idx;
+  }
+
   maxPower(): number {
     return this.ld.starting_power;
   }
@@ -1127,7 +1140,7 @@ class GameState {
   last_money_earned = 0;
   resetDay(): void {
     ++this.day_idx; // just for tutorials
-    this.last_money_earned = this.sim_state && this.sim_state.money_earned || 0;
+    this.last_money_earned = this.sim_state && this.sim_state.player_money_earned[this.my_player_idx] || 0;
     this.sim_state = new SimState(this, this.float.bind(this));
   }
   skipRevenue(): void {
@@ -1157,16 +1170,12 @@ class GameState {
     }
   }
 
-  best_value = 0;
   calcValue(): number {
     let ss = new SimState(this, null);
     while (ss.power >= -1) {
       ss.tick();
     }
-    let v = ss.money_earned;
-    if (v >= this.best_value) {
-      this.best_value = v;
-    }
+    let v = ss.player_money_earned[this.my_player_idx];
     return v;
   }
 
@@ -2120,8 +2129,8 @@ function statePlay(dt: number): void {
     view_center[1] = game_state.h / 2 + 2;
   }
   camera2d.push();
-  let x0 = floor(view_center[0] * TILE_SIZE - camera2d.w() / 2);
-  let y0 = floor(view_center[1] * TILE_SIZE - camera2d.h() / 2);
+  let x0 = (view_center[0] * TILE_SIZE - camera2d.w() / 2);
+  let y0 = (view_center[1] * TILE_SIZE - camera2d.h() / 2);
   camera2d.set(x0, y0, x0 + camera2d.w(), y0 + camera2d.h());
   let { map, w, h, sim_state } = game_state;
   let { drones, transfers, sim_map } = sim_state;
@@ -2152,8 +2161,8 @@ function statePlay(dt: number): void {
 
   // draw map
   let my_zone = game_state.player_zones[game_state.my_player_idx];
-  let homebase_x = 0;
-  let homebase_y = 0;
+  let homebase_x: number[] = [];
+  let homebase_y: number[] = [];
   for (let yy = 0; yy < h; ++yy) {
     let row = map[yy];
     let sim_row = sim_map[yy];
@@ -2194,13 +2203,10 @@ function statePlay(dt: number): void {
         color = color_spawner;
         zz -= 0.1;
       } else if (tile.type === 'base') {
-        if (in_my_zone) {
-          homebase_x = xx;
-          homebase_y = yy;
-        } else {
-          let player_idx = (xx < w/2 ? 0 : 1) +
-            (yy < h / 2 ? 0 : 2);
-          player_idx %= game_state.ld.players;
+        let player_idx = game_state.playerIdxFromPos(xx, yy);
+        homebase_x[player_idx] = xx;
+        homebase_y[player_idx] = yy;
+        if (player_idx !== game_state.my_player_idx) {
           let { user_id } = game_state.players[player_idx];
           let name = user_id ? getDisplayName(user_id) : '(waiting for player)';
           font.draw({
@@ -2267,15 +2273,17 @@ function statePlay(dt: number): void {
   }
   z++;
 
-  if (homebase_x) {
-    font.draw({
-      style: style_base_money,
-      x: (homebase_x + 1.5) * TILE_SIZE,
-      y: homebase_y * TILE_SIZE + 28,
-      z,
-      align: ALIGN.HCENTER,
-      text: `$${sim_state.money_earned}`,
-    });
+  for (let ii = 0; ii < homebase_x.length; ++ii) {
+    if (homebase_x[ii]) {
+      font.draw({
+        style: style_base_money,
+        x: (homebase_x[ii] + 1.5) * TILE_SIZE,
+        y: homebase_y[ii] * TILE_SIZE + 28,
+        z,
+        align: ALIGN.HCENTER,
+        text: `$${sim_state.player_money_earned[ii]}`,
+      });
+    }
   }
 
   // draw drones
