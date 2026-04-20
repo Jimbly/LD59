@@ -2942,7 +2942,7 @@ function statePlay(dt: number): void {
         v4set(color, 1 - blend_within, 1 - blend_within, 1 - blend_within, 1 - blend_within);
       }
     } else { // to/from
-      if (blend_within < 1 && (mode !== 'pickup' || isTransferTo(x, y))) {
+      if (blend_within < 1 && (mode !== 'pickup'/* || isTransferTo(x, y)*/)) {
         continue;
       }
       blend_v = blend_inout;
