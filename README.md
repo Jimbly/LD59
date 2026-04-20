@@ -1,11 +1,11 @@
-LD59 - Theme Signal & Machines
+LD59 - Themes "Signal" & "Machines"
 ============================
 
-Ludum Dare 59 Entry by Jimbly - "Drone Supervisor II Online"
+Ludum Dare 59 and Gamedev.js '26 Entry by Jimbly - "Drone Supervisor II Online"
 
 Async multiplayer online automation game
 
-* Play here: [dashingstrike.com/LudumDare/LD59/](http://www.dashingstrike.com/LudumDare/LD59/)
+* Play here: [dashingstrike.com/dronesup2/](http://www.dashingstrike.com/dronesup2/)
 * Using [Javascript libGlov/GLOV.js framework](https://github.com/Jimbly/glovjs)
 
 Acknowledgements:
