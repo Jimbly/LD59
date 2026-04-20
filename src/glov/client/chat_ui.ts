@@ -1899,8 +1899,10 @@ class ChatUI {
       }
 
       // Then join message
-      this.addChat(getStringIfLocalizable(this.channel_join_message) ||
-        `Joined channel ${this.channel.channel_id}`, 'join_leave');
+      if (here.length) {
+        this.addChat(getStringIfLocalizable(this.channel_join_message) ||
+          `Joined room ${this.channel.channel_id.split('.')[1]}`, 'join_leave');
+      }
       // Then who's here now
       if (here.length || friends.length) {
         let msg = [];

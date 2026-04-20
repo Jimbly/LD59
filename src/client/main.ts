@@ -13,6 +13,7 @@ export const BUTTON_HEIGHT = TILE_SIZE + 4;
 import assert from 'assert';
 import { autoAtlas } from 'glov/client/autoatlas';
 import * as camera2d from 'glov/client/camera2d';
+import { ChatUI, chatUICreate } from 'glov/client/chat_ui';
 import { cmd_parse } from 'glov/client/cmds';
 import * as engine from 'glov/client/engine';
 import { ALIGN, Font, FontStyle, fontStyle, fontStyleColored } from 'glov/client/font';
@@ -26,8 +27,15 @@ import {
   mouseUpEdge,
 } from 'glov/client/input';
 import { markdownAuto } from 'glov/client/markdown';
-import { markdownImageRegisterAutoAtlas, markdownSetColorStyle } from 'glov/client/markdown_renderables';
-import { ClientChannelWorker, netInit } from 'glov/client/net';
+import {
+  markdown_default_renderables,
+  markdownImageRegisterAutoAtlas,
+  markdownSetColorStyle,
+} from 'glov/client/markdown_renderables';
+import {
+  ClientChannelWorker,
+  netInit,
+} from 'glov/client/net';
 import { scoreAlloc, ScoreSystem } from 'glov/client/score';
 import { ScrollArea, scrollAreaCreate } from 'glov/client/scroll_area';
 import { socialInit } from 'glov/client/social';
@@ -87,6 +95,8 @@ import {
 } from './palette';
 import { SOUND_DATA } from './sound_data';
 import { getDisplayName, titleInit, titleReturn } from './title';
+
+let chat_ui: ChatUI | null = null;
 
 const { abs, floor, random, max, min, sin, pow, sqrt, round } = Math;
 
@@ -1783,6 +1793,7 @@ function cellFrame(type: CellType, rot: number): string {
   }
 }
 
+const TOOL_PANEL_W = 64;
 let selected_tool = -1;
 let selected_rot = 0;
 let is_ff = false;
@@ -1826,7 +1837,7 @@ function drawHUD(eff_is_ff: boolean): void {
   let x = camera2d.x0();
   y = camera2d.y0();
   let z = Z.UI;
-  let w = 64;
+  let w = TOOL_PANEL_W;
   x += TOOL_PAD;
   y += TOOL_PAD;
   w -= TOOL_PAD * 2;
@@ -2640,6 +2651,8 @@ Offline revenue-days accumulate with diminishing returns up to 99 days after abo
   menuUp();
 }
 
+let did_chat_help = false;
+
 let counter = 0;
 function statePlay(dt: number): void {
   let dt_orig = dt;
@@ -2673,6 +2686,23 @@ function statePlay(dt: number): void {
   if (show_help) {
     drawHelp();
   }
+
+  // eslint-disable-next-line @typescript-eslint/no-use-before-define
+  if (!did_chat_help && chat_ui && multipleCliensInRoom()) {
+    did_chat_help = true;
+    chat_ui.addChat('Press <ENTER> to chat');
+  }
+
+  chat_ui?.run({
+    x: camera2d.x0() + TOOL_PANEL_W + 2,
+    hide: false,
+    hide_input: true,
+    border: 2,
+    cuddly_scroll: true,
+    y: camera2d.y1() - chat_ui.h,
+    always_scroll: false,
+  });
+
   drawHUD(eff_is_ff);
   drawTutorial();
 
@@ -3020,10 +3050,16 @@ function statePlay(dt: number): void {
 
   camera2d.pop();
   drawFloaters(ui_floaters, dt_orig, Z.UIFLOATERS, FONT_HEIGHT * 2);
+
+  chat_ui?.runLate();
 }
 
 let differ: Differ;
 let game_room: ClientChannelWorker;
+
+function multipleCliensInRoom(): boolean {
+  return Object.keys(game_room?.getChannelData('public.clients', {})).length > 1;
+}
 function sendDiff(): void {
   let me = game_state.me();
   me.revenue = game_state.calcValue();
@@ -3044,6 +3080,7 @@ function sendDiff(): void {
 function playLeave(): void {
   game_room.unsubscribe();
   game_room = null!;
+  chat_ui?.setChannel(null);
   titleReturn();
 }
 
@@ -3067,6 +3104,7 @@ function onChannelData(channel_data: DataObject): void {
 
 export function playInit(level_idx: number, player_idx: number, channel: ClientChannelWorker): void {
   game_room = channel;
+  chat_ui?.setChannel(channel);
   if (!(channel as unknown as DataObject).set_on_batch_data) {
     (channel as unknown as DataObject).set_on_batch_data = true;
     channel.on('channel_data_batch', onChannelData);
@@ -3157,7 +3195,20 @@ export function main(): void {
   // playInit();
   titleInit();
 
-  profanityStartup();
+
+  if (!engine.defines.COMPO) {
+    chat_ui = chatUICreate({
+      max_len: 1000,
+      w: game_width - TOOL_PANEL_W - 2 - BUTTON_HEIGHT * 3 - 4 * 3 - 2,
+      h: FONT_HEIGHT * 5,
+      outline_width: 3,
+      fade_start_time: [10000, 5000],
+      fade_time: [1000, 1000],
+      renderables: markdown_default_renderables, // use all system renderables
+    });
+  } else {
+    profanityStartup();
+  }
 
   // markdownSetColorStyle('floater', style_floater);
   // markdownSetColorStyle('floater.bold', fontStyle(style_floater, {
