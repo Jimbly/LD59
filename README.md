@@ -18,7 +18,6 @@ Start with: `npm start` (after running `npm i` once)
 TODO
 ====
 
-sound dimming based on distance from view center + is-on-screen check
 Add chat UI, might as well
 mousewheel to zoom in/out
 

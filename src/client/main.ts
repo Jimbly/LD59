@@ -31,6 +31,7 @@ import { ClientChannelWorker, netInit } from 'glov/client/net';
 import { scoreAlloc, ScoreSystem } from 'glov/client/score';
 import { ScrollArea, scrollAreaCreate } from 'glov/client/scroll_area';
 import { socialInit } from 'glov/client/social';
+import { sound3DListener, soundPlay } from 'glov/client/sound';
 import { SPOT_NAVTYPE_SIMPLE, spotSetNavtype } from 'glov/client/spot';
 import { spriteSetGet } from 'glov/client/sprite_sets';
 import { BLEND_ADDITIVE } from 'glov/client/sprites';
@@ -104,28 +105,47 @@ const RES_OFFS_TILE = -2;
 const TICK_TIME = 1000;
 const MAX_PAYOUT_DAYS = 99;
 
+const SOUND_POS_SCALE = 0.1;
+
 let font: Font;
 
 let no_sounds = false;
 let sound_rect: JSVec4;
-export function playSound(sound_id: keyof typeof SOUND_DATA): void {
+type SoundID = keyof typeof SOUND_DATA;
+export function playSound(sound_id: SoundID): void {
   if (no_sounds) {
     return;
   }
   playUISound(sound_id);
 }
 
-export function playSoundPos(x: number, y: number, sound_id: keyof typeof SOUND_DATA): void {
+let sound_index: Partial<Record<SoundID, number>> = {};
+
+export function playSoundPos(x: number, y: number, sound_id: SoundID): void {
   if (no_sounds) {
     return;
   }
   // eslint-disable-next-line @typescript-eslint/no-use-before-define
-  let volume = inZone(sound_rect, x, y) ? 1 : 0.125;
-  playUISound(sound_id, volume);
+  let in_zone = inZone(sound_rect, x, y);
+  if (engine.defines.COMPO) {
+    let volume = in_zone ? 1 : 0.125;
+    playUISound(sound_id, volume);
+  } else {
+    const pos = [x * SOUND_POS_SCALE, y * SOUND_POS_SCALE, in_zone ? 0 : -10*SOUND_POS_SCALE] as const;
+    let list = SOUND_DATA[sound_id];
+    if (list && Array.isArray(list) && list.length > 1) {
+      let idx = (sound_index[sound_id] || 0);
+      sound_index[sound_id] = (idx + 1) % list.length;
+      sound_id = list[idx] as SoundID;
+      soundPlay(sound_id, { pos });
+    } else {
+      playUISound(sound_id, { pos });
+    }
+  }
 }
 
 let seconds_per_tick = TICK_TIME; // really ms
-export function playSoundDelayed(x: number, y: number, sound_id: keyof typeof SOUND_DATA): void {
+export function playSoundDelayed(x: number, y: number, sound_id: SoundID): void {
   if (no_sounds) {
     return;
   }
@@ -2694,6 +2714,11 @@ function statePlay(dt: number): void {
     view_center[0] = game_state.w / 2 + 2;
     view_center[1] = game_state.h / 2 + 2;
   }
+  sound3DListener({
+    pos: [view_center[0]*SOUND_POS_SCALE, view_center[1]*SOUND_POS_SCALE, 0],
+    forward: [0, -1, 0],
+    up: [0, 0, -1],
+  });
   camera2d.push();
   let x0 = (view_center[0] * TILE_SIZE - camera2d.w() / 2);
   let y0 = (view_center[1] * TILE_SIZE - camera2d.h() / 2);
