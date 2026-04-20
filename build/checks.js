@@ -72,7 +72,7 @@ module.exports = function (filename) {
   prettyInterface();
 
   requireVersions({
-    'nodejs': '22.12.0', // also in package.json and eslint.config.mjs
+    // 'nodejs': '22.12.0', // also in package.json and eslint.config.mjs
     'glov-build': '1.0.52',
     'glov-build-browserify': '1.0.10',
     'glov-build-cache': '1.1.0',
