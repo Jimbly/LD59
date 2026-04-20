@@ -3021,6 +3021,10 @@ export function playNewGameState(level_idx: number): GameStateSerialized {
 }
 
 function onChannelData(channel_data: DataObject): void {
+  if (!game_room) {
+    // already left
+    return;
+  }
   let ser = game_room.getChannelData<GameStateSerialized>('public.gs', null!);
   let diff = differ.update(ser);
   if (diff.length) {
