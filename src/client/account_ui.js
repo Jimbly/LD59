@@ -18,6 +18,8 @@ const {
 const ui = require('glov/client/ui.js');
 const { uiTextHeight } = require('glov/client/ui');
 const { vec4 } = require('glov/common/vmath.js');
+const { wavedashUserName } = require('./wavedash');
+const { scoreGetPlayerName } = require('glov/client/score');
 
 export function formatUserID(user_id, display_name) {
   if (user_id.match(guest_regex)) {
@@ -92,11 +94,22 @@ AccountUI.prototype.playAsGuest = function (use_name) {
         },
       });
     } else {
-      net.subs.sendCmdParse('rename_random', (err) => {
-        if (err) {
-          console.log(err);
+      if (name === net.subs.getDisplayName()) {
+        let desired_name = wavedashUserName() || scoreGetPlayerName();
+        if (desired_name) {
+          net.subs.sendCmdParse(`rename ${desired_name}`, (err) => {
+            if (err) {
+              console.log(err);
+            }
+          });
+        } else if (name === net.subs.getDisplayName()) {
+          net.subs.sendCmdParse('rename_random', (err) => {
+            if (err) {
+              console.log(err);
+            }
+          });
         }
-      });
+      }
     }
   });
 };

@@ -124,6 +124,7 @@ import {
 } from './palette';
 import { SOUND_DATA } from './sound_data';
 import { getDisplayName, titleInit, titleReturn } from './title';
+import { wavedashReady } from './wavedash';
 
 let chat_ui: ChatUI | null = null;
 
@@ -3163,6 +3164,7 @@ export function playInit(level_idx: number, player_idx: number, channel: ClientC
 }
 
 export function main(): void {
+  wavedashReady(); // before netInit()
   if (platformGetID() === 'discord') {
     environmentsInit([{
       name: 'discord',
